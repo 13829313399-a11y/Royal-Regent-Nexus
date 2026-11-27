@@ -458,7 +458,10 @@ async function switchBook(kind){
     }
   }
 }
-function cellText(td){return (td?.innerText??td?.textContent??'').trim();}
+ function cellText(td){
+   const value=td?.wbReviewRender?td.querySelector('.wb-review-action'):td;
+   return (value?.innerText??value?.textContent??'').trim();
+ }
 function syncSelection(){
   const cell=cellAt(active);
   const value=cell?displayValue(cell,cellValue(cell)):cellText(active);

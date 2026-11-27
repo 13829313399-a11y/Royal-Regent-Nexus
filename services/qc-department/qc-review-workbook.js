@@ -53,10 +53,25 @@
   function button(label,fn){
     const el=node('button',label);el.type='button';el.onclick=fn;return el;
   }
+  const photoIcons={
+    image:'<rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="8" cy="9" r="1.35"/><path d="m4 17 5-4 3 2.5 4-5 4 5"/>',
+    camera:'<path d="M8 6.5 9.6 4h4.8L16 6.5h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z"/><circle cx="12" cy="12.8" r="3.1"/>',
+    plus:'<path d="M12 5v14M5 12h14"/>',
+    close:'<path d="m6 6 12 12M18 6 6 18"/>',
+    zoom:'<path d="M13 5h6v6M19 5l-5 5M11 19H5v-6m0 6 5-5"/>',
+    remove:'<path d="M4 6.5h16M9 6.5V4h6v2.5M6 6.5l1 13.5h10l1-13.5M10 10v6m4-6v6"/>',
+  };
+  function photoIcon(name){
+    const el=root.document.createElementNS('http://www.w3.org/2000/svg','svg');
+    el.setAttribute('viewBox','0 0 24 24');
+    el.setAttribute('aria-hidden','true');
+    el.innerHTML=photoIcons[name];
+    return el;
+  }
   function create(context){
     const {columns,api,requestKey}=context,snapshots=new Map(context.rows.map(row=>[row.id,clone(row)]));
     const files=new Map(), removed=new Map(), receipts=new Map(), cells={};
-    let sectionModal=null,photoBusy=false;
+    let sectionModal=null,photoViewer=null,photoBusy=false;
     const institutionOptions=context.options.institutions||[];
     const photoPath=(id,photo)=>'api/inspection-sheet/entries/'+encodeURIComponent(id)+'/photos/'+encodeURIComponent(photo);
     const entryPath=(id,action)=>'review/entries/'+encodeURIComponent(id)+'/'+action;
@@ -194,20 +209,67 @@
       receipts.delete(key);
       return {customerKey,field,value,version:sent.baseVersion+1};
     }
-    function photoDialog(cell,trigger,staging){
+    function savedPhotoIds(entryId,choices){
+      const saved=new Set(snapshots.get(entryId).photos.map(photo=>photo.id));
+      return choices.map(id=>files.get(id)?.photoId||id).filter(id=>saved.has(id));
+    }
+    async function openPhotos(cell,ids,first,trigger,onError){
+      if(photoBusy)return;
+      const entryId=cell.customerKey;
+      photoBusy=true;
+      try{
+        assertRow(entryId,false);
+        const viewer=root.QcInspectionSummary?.openPhoto;
+        if(!viewer)throw Error('照片预览尚未就绪，请重试');
+        const {items}=await api('entries/'+encodeURIComponent(entryId)+'/photo-info');
+        if(!trigger.isConnected||!scope(false))return;
+        const row=assertRow(entryId,false),byPhoto=new Map(items.map(photo=>[photo.id,photo]));
+        const photos=ids.map(id=>byPhoto.get(id)).filter(Boolean);
+        const index=first===null?0:photos.findIndex(photo=>photo.id===first);
+        if(!photos[index])throw Error('照片已移除，请刷新记录');
+        const annotate=!cell.readonly&&context.canEdit(row)&&scope(true)?async body=>{
+          const current=assertRow(entryId,true);
+          const saved=await api(entryPath(entryId,'photo-annotations'),body);
+          record(current,saved.entry);
+          return saved.photo;
+        }:null;
+        photoViewer=viewer({entryId},photos,index,null,trigger,annotate);
+      }catch(error){onError(error);}
+      finally{photoBusy=false;}
+    }
+    function photoDialog(cell,trigger,staging,fallback=trigger){
       const row=assertRow(cell.customerKey,false),write=!cell.readonly&&context.canEdit(row)&&scope(true);
-      let choices=cell.special==='photos'?JSON.parse(staging.current()):row.photos.map(p=>p.id);
-      const d=node('dialog');d.className='qis-workbook-photos';d.setAttribute('aria-label','验货照片');
-      const head=node('header'),title=node('strong','验货照片');
-      const close=button('关闭',()=>d.close());head.append(title,close);
-      const list=node('div');list.className='qis-workbook-photo-list';
-      const tools=node('div'),status=node('p');status.setAttribute('role','alert');
-      d.append(head,node('p',[row.customer,row.poNo,row.productNo].join(' · ')),tools,list,status);
+      const original=staging.current();
+      let choices=JSON.parse(original);
+      const d=node('dialog');d.className='qis-workbook-photos';d.setAttribute('aria-labelledby','qis-photo-manager-title');
+      const head=node('header'),heading=node('div'),title=node('h2','管理照片');
+      title.id='qis-photo-manager-title';
+      const badge=node('span');badge.className='qis-photo-manager-badge';badge.append(photoIcon('image'));
+      const identity=node('p');
+      for(const value of [row.customer,row.poNo&&'PO '+row.poNo,row.productNo&&'货号 '+row.productNo]){
+        if(value)identity.append(node('span',value));
+      }
+      heading.append(title,identity);
+      const close=button('',()=>d.close());
+      close.className='qis-photo-manager-close';close.setAttribute('aria-label','关闭');close.autofocus=true;close.append(photoIcon('close'));
+      head.append(badge,heading,close);
+      const content=node('div');content.className='qis-photo-manager-content';
+      const list=node('ul');list.className='qis-workbook-photo-list';list.setAttribute('aria-label','验货照片列表');
+      const empty=node('div');empty.className='qis-photo-manager-empty';empty.append(photoIcon('image'),node('strong','暂无照片'));
+      const bar=node('div'),tools=node('div'),count=node('span'),status=node('p');
+      bar.className='qis-photo-manager-bar';tools.className='qis-photo-manager-tools';
+      count.setAttribute('aria-live','polite');status.className='qis-photo-manager-status';status.setAttribute('role','alert');
+      bar.append(count,tools);content.append(bar,status,list,empty);d.append(head,content);
+      const apply=button('应用到工作簿',()=>{
+        if(staging.change(JSON.stringify(choices))!==false)d.close();
+      });
       if(write){
-        for(const label of ['选照片','拍照']){
-          const entry=node('label',label),input=node('input');input.type='file';input.accept=context.photoAccept;
-          if(label==='拍照'){input.accept='image/*';input.setAttribute('capture','environment');}else input.multiple=true;
-          entry.append(input);tools.append(entry);
+        for(const [label,icon] of [['拍照','camera'],['选照片','plus']]){
+          const entry=node('label'),input=node('input');
+          entry.className='qis-photo-manager-button qis-photo-manager-'+icon;
+          input.type='file';input.accept=context.photoAccept;
+          if(icon==='camera'){input.accept='image/*';input.setAttribute('capture','environment');}else input.multiple=true;
+          entry.append(photoIcon(icon),label,input);tools.append(entry);
           input.onchange=()=>{
             const selected=[...input.files];input.value='';
             if(!selected.length)return;
@@ -221,57 +283,95 @@
             status.textContent='';draw();
           };
         }
-        d.append(button('确定',()=>{
-          if(staging.change(JSON.stringify(choices))!==false)d.close();
-        }));
+        const footer=node('footer'),actions=node('div'),cancel=button('取消',()=>d.close());
+        cancel.className='qis-photo-manager-button qis-photo-manager-cancel';
+        apply.className='qis-photo-manager-button qis-photo-manager-apply';
+        actions.className='qis-photo-manager-actions';actions.append(cancel,apply);
+        footer.append(actions);d.append(footer);
       }
       function draw(){
-        list.replaceChildren(...choices.map(id=>{
+        count.textContent=choices.length+' 张照片';
+        empty.hidden=Boolean(choices.length);list.hidden=!choices.length;
+        apply.disabled=JSON.stringify(choices)===original;
+        list.replaceChildren(...choices.map((id,index)=>{
           const pending=files.get(id),photo=snapshots.get(row.id).photos.find(p=>p.id===(pending?.photoId||id));
           const image=node('img');image.alt=pending?.file.name||photo?.name||'验货照片';
-          image.src=pending?.url||photoPath(row.id,id);
-          const item=node('figure');
-          if(photo){const view=button('',async()=>{
-            try{
-              photoBusy=true;
-              const data=await api('entries/'+encodeURIComponent(row.id)+'/photo-info');
-              const index=data.items.findIndex(item=>item.id===photo.id);
-              if(!d.open||index<0)return;
-              const annotate=write?async body=>{
-                const current=assertRow(row.id,true);
-                const saved=await api(entryPath(row.id,'photo-annotations'),body);
-                record(current,saved.entry);return saved.photo;
-              }:null;
-              root.QcInspectionSummary?.openPhoto({entryId:row.id},data.items,index,d,view,annotate);
-            }catch(error){status.textContent=error.message;}
-            finally{photoBusy=false;}
-          });view.setAttribute('aria-label','查看 '+image.alt);view.append(image);item.append(view);}else item.append(image);
-          item.append(node('figcaption',image.alt));
-          if(write)item.append(button('移除',()=>{choices=choices.filter(x=>x!==id);draw();}));
+          image.src=pending?.url||photoPath(row.id,id);image.loading='lazy';
+          const item=node('li');
+          const thumbnail=photo?button('',()=>openPhotos(cell,savedPhotoIds(row.id,choices),photo.id,thumbnail,error=>{status.textContent=error.message;})):node('span');
+          thumbnail.className='qis-photo-manager-thumb';thumbnail.append(image);
+          if(photo){
+            thumbnail.setAttribute('aria-label','查看大图：'+image.alt);
+            const zoom=node('span');zoom.className='qis-photo-manager-zoom';zoom.append(photoIcon('zoom'));thumbnail.append(zoom);
+          }
+          const file=node('div'),name=node('span',image.alt);
+          name.className='qis-photo-manager-name';name.title=image.alt;file.append(name);
+          if(pending&&!photo){
+            const draft=node('span','待保存');draft.className='qis-photo-manager-draft';file.append(draft);
+          }
+          item.append(thumbnail,file);
+          if(write){
+            const remove=button('移除',()=>{
+              choices=choices.filter(x=>x!==id);draw();
+              const next=list.children[Math.min(index,list.children.length-1)]?.querySelector('.qis-photo-manager-remove');
+              (next||apply).focus();
+            });
+            remove.className='qis-photo-manager-remove';remove.setAttribute('aria-label','移除 '+image.alt);remove.prepend(photoIcon('remove'));
+            item.append(remove);
+          }
           return item;
         }));
-        if(!choices.length)list.append(node('p','暂无照片'));
       }
       draw();root.document.body.append(d);sectionModal=d;
-      d.addEventListener('close',()=>{sectionModal=null;d.remove();if(trigger.isConnected)trigger.focus();});
+      d.addEventListener('close',()=>{
+        sectionModal=null;d.remove();
+        const target=trigger.hidden?fallback:trigger;
+        if(target.isConnected)target.focus({preventScroll:true});
+      });
       d.showModal();
     }
     function special(td,cell,staging){
-      const action=button('',()=>{
+      const notify=error=>root.showToast?.(error.message,'error');
+      const open=fn=>()=>{
         if(staging.busy())return;
-        try{
-          staging.select();
-          if(cell.special==='photos')photoDialog(cell,action,staging);
-          else {assertRow(cell.customerKey,!cell.readonly);context.detail(cell.customerKey,cell.special,staging);}
-        }catch(error){root.showToast?.(error.message,'error');}
+        try{staging.select();fn();}catch(error){notify(error);}
+      };
+      const sheetButton=(label,fn)=>{
+        const control=button(label,open(fn));
+        control.className='wb-review-action';
+        control.setAttribute('aria-haspopup','dialog');
+        control.style.cssText='border:1px solid #d5ded5;border-radius:4px;padding:2px 5px;background:white;color:#355a46;font:inherit;white-space:nowrap;cursor:pointer';
+        return control;
+      };
+      const isPhoto=cell.special==='photos';
+      const action=sheetButton('',()=>{
+        if(!isPhoto){
+          assertRow(cell.customerKey,!cell.readonly);context.detail(cell.customerKey,cell.special,staging);
+          return;
+        }
+        const ids=savedPhotoIds(cell.customerKey,JSON.parse(staging.current()));
+        if(ids.length)void openPhotos(cell,ids,null,action,notify);
+        else photoDialog(cell,action,staging);
       });
-      action.className='wb-review-action';
-      action.style.cssText='border:1px solid #d5ded5;border-radius:4px;padding:2px 5px;background:white;color:#355a46;font:inherit;white-space:nowrap;cursor:pointer';
       td.replaceChildren(action);
-      const draw=raw=>{
-        const count=JSON.parse(raw).length;
-        action.textContent=cell.special==='photos'?(count?count+' 张':'选照片 / 拍照'):cell.label+'（'+count+' 条）';
-        action.setAttribute('aria-label',cell.label+' '+cell.customerKey+' '+count);
+      const manage=isPhoto&&!cell.readonly?sheetButton('管理',()=>photoDialog(cell,manage,staging,action)):null;
+      if(manage){
+        manage.setAttribute('aria-label','管理照片');
+        manage.style.marginInlineStart='4px';
+        td.append(manage);
+      }
+      const draw=(raw=staging.current())=>{
+        const choices=JSON.parse(raw);
+        const count=choices.length;
+        if(!isPhoto){
+          action.textContent=cell.label+'（'+count+' 条）';
+          action.setAttribute('aria-label',cell.label+' '+cell.customerKey+' '+count);
+          return;
+        }
+        const saved=savedPhotoIds(cell.customerKey,choices).length;
+        action.textContent=saved?saved+' 张':count?'待保存':'选照片 / 拍照';
+        action.setAttribute('aria-label',saved?'查看 '+saved+' 张验货照片':count?'管理待保存照片':'选照片 / 拍照');
+        if(manage)manage.hidden=!saved;
       };
       draw(staging.current());return draw;
     }
@@ -279,6 +379,7 @@
       for(const tr of grid.querySelectorAll('[data-review-entry]')){
         const row=snapshots.get(tr.dataset.reviewEntry);
         if(!row)continue;
+        tr.querySelector('td[data-field="photos"]')?.wbReviewRender?.();
         for(const field of ['lastChangedAt','lastLocation','lastActor.name']){
           const cell=tr.querySelector(`td[data-field="${field}"]`);
           if(cell)cell.querySelector('font').textContent=context.value(row,field)??'';
@@ -300,7 +401,7 @@
       x.writeFile(workbook,'待审核验货明细.xlsx');
     }
     return {book,normalize:canonical,save,requestKey,special,refreshAudit,export:exportSheet,
-      busy:()=>Boolean(sectionModal?.open||photoBusy||context.busy?.()),
+      busy:()=>Boolean(sectionModal?.open||photoViewer?.open||photoBusy||context.busy?.()),
       close:()=>{for(const file of files.values())root.URL.revokeObjectURL(file.url);return context.close();}};
   }
   root.QcPendingReviewWorkbook={summary,create};
