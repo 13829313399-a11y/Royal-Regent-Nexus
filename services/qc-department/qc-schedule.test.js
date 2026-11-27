@@ -154,12 +154,49 @@ for(const payload of [{factory_id:'hy-other',contract_version:'1',status:'mappin
 test('network errors are visible and never presented as an empty connected schedule',async()=>{
   const dom=await page(async()=>{throw new Error('offline')});try{assert.match(dom.window.document.getElementById('qsRows').textContent,/读取失败/);}finally{dom.window.close();}
 });
-test('intake preview marks duplicates, disables all-duplicate imports, and reports mixed confirmations',async()=>{
+test('manual intake identifies missing fields and retries the same save on HTTP', async () => {
+  const requests = [];
+  const dom = await page(async (url, init) => {
+    if (!url.endsWith('/intake/manual')) return response(url);
+    requests.push(JSON.parse(init.body));
+    if (requests.length === 1) throw Error('网络中断');
+    return {ok:true, json:async () => ({count:1, existing:0})};
+  });
+  try {
+    const w = dom.window, d = w.document;
+    Object.defineProperty(w.crypto, 'randomUUID', {value:undefined});
+    w.__QC_NEXUS.workflow = {manual:true};
+    let reloads = 0;
+    w.QcInspectionSheet = {model:{items:[]}, navigationState:() => ({}), load:async () => { reloads++; }};
+    w.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+    w.HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new w.Event('close')); };
+    d.getElementById('page-records').classList.add('active');
+    w.QcSchedule.openNew();
+    d.querySelector('[data-switch-mode]').click();
+    const form = d.querySelector('#qc-intake-manual'), save = d.querySelector('[data-save]');
+    const error = d.querySelector('[data-error]');
+    save.click();
+    assert.match(error.textContent, /验货日期/);
+    assert.equal(requests.length, 0);
+    const fields = {dateFrom:'2026-11-27', customer:'手动验收', productNo:'0012', quantity:'2', agency:'客验'};
+    for (const [name, value] of Object.entries(fields)) form.elements[name].value = value;
+    save.click(); await tick();
+    assert.equal(error.textContent, '网络中断');
+    assert.equal(form.elements.productNo.value, '0012');
+    save.click(); await tick();
+    assert.equal(requests.length, 2);
+    assert.deepEqual(requests[0], requests[1]);
+    assert.match(requests[0].requestKey, /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/);
+    for (const [name, value] of Object.entries(fields)) assert.equal(requests[0].row[name], value);
+    assert.equal(reloads, 1);
+  } finally { dom.window.close(); }
+});
+test('intake allows confirming all rows including identical entries',async()=>{
  const calls=[], toasts=[];
  let preview, reloads=0;
  const dom=await page(async (url,init)=>{
   if(url.endsWith('/preview'))return {ok:true,json:async()=>preview};
-  if(url.endsWith('/import')){calls.push(init);return {ok:true,json:async()=>({count:1,existing:1})};}
+  if(url.endsWith('/import')){calls.push(init);return {ok:true,json:async()=>({count:2,existing:0})};}
   return response(url);
  });
  try{
@@ -202,29 +239,27 @@ test('intake preview marks duplicates, disables all-duplicate imports, and repor
   preview={sheet:'客户验货排期',digest:'old-version',rows:[{line:7}]};
   picker.dispatchEvent(new w.Event('change')); await tick();
   assert.equal(button.disabled,true);
-   assert.match(d.querySelector('[data-error]').textContent,/尚未启用逐行查重/);
+   assert.match(d.querySelector('[data-error]').textContent,/重新选择文件/);
    assert.equal(filename.textContent,'选择 Excel 文件');
    assert.equal(footer.hidden,true);
-   await select(0,[true,true]);
+   await select(2,[false,false]);
    assert.equal(filename.textContent,file.name);
-  assert.equal(button.disabled,true);
-  assert.match(d.querySelector('[data-preview-count]').textContent,/待追加 0 条 · 重复跳过 2 条/);
-  button.click();
+  assert.equal(button.disabled,false);
+  assert.match(d.querySelector('[data-preview-count]').textContent,/待追加 2 条/);
   assert.equal(calls.length,0);
-   await select(1,[true,false]);
    assert.equal(footer.hidden,false);
    mode.click();
    assert.equal(manual.querySelector('[name=customer]').value,'测试客户');
    assert.equal(button.hidden,true);
    mode.click();
    assert.equal(button.hidden,false);
-  assert.deepEqual([...d.querySelectorAll('[data-preview] tbody tr')].map(r=>r.cells[1].textContent),['重复，跳过','待追加']);
+  assert.deepEqual([...d.querySelectorAll('[data-preview] tbody tr')].map(r=>r.cells[1].textContent),['待追加','待追加']);
   assert.equal(button.disabled,false);
   button.click(); await tick();
   assert.equal(calls.length,1);
   assert.equal(calls[0].headers['X-QC-Preview-Digest'],'example-digest');
   assert.equal(reloads,1);
-  assert.deepEqual(toasts,['已追加 1 条，跳过重复 1 条']);
+  assert.deepEqual(toasts,['已追加 2 条验货记录']);
  }finally{dom.window.close();}
 });
 test('customer whitespace is consistent between dynamic choices and filtering',()=>{

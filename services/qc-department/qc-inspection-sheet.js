@@ -240,10 +240,13 @@
     if(model.view!==view){
       root.document.getElementById(model.view==='records'?'recordsTableWrap':'reviewTableWrap')?.replaceChildren();
       model.items=[];model.drafts.clear();model.checked.clear();
-      if(view!=='review')clearReviewGuide();
+      clearReviewGuide();
+      reviewGuideShown=false;
     }
     model.recordChecked.clear();
     if(model.reviewTab!==tab){
+      clearReviewGuide();
+      reviewGuideShown=false;
       model.checked.clear();
       reviewDates?.setRange(model.reviewFilters.from,model.reviewFilters.to);
     }
@@ -1281,6 +1284,8 @@
     }
   }
   function clearReviewDates(){
+    clearReviewGuide();
+    reviewGuideShown=false;
     const select=root.document.getElementById('qisPendingDate');
     if(select)select.value='';
     Object.assign(model.reviewFilters,{from:'',to:''});
@@ -1334,6 +1339,7 @@
     reviewGuide=null;
   }
   function updateReviewGuide(controls,entry,rows){
+    if(!root.document.getElementById('page-review')?.classList.contains('active'))return;
     if(!trackReads()||!entry||entry.hidden){clearReviewGuide();return;}
     const unread=rows.filter(row=>row.reviewState==='pending'&&row.reviewRead===false);
     const read=rows.filter(row=>row.reviewState==='pending'&&row.reviewRead===true).length;
@@ -1345,13 +1351,14 @@
     }
     if(badge){badge.hidden=!unread.length;badge.textContent=unread.length;}
     opener.setAttribute('aria-label','打开完整工作簿'+(unread.length?'，'+unread.length+' 条未读':''));
-    if(model.loading||model.error||!unread.length){
+    if(model.loading)return;
+    if(model.error||!rows.length){
       reviewGuide?.fade();
       return;
     }
     if(reviewGuideShown)return;
-    reviewGuideShown=true;
     reviewGuide=root.QcGlassGuide?.review(controls,{anchor:opener,unread:unread.length,read});
+    reviewGuideShown=Boolean(reviewGuide);
   }
   function updateReviewControls(rows){
     const pending=model.items.filter(r=>r.reviewState==='pending').length;

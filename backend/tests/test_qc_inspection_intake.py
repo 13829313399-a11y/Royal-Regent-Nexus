@@ -110,18 +110,20 @@ def test_legacy_date_bands_and_subtotals_are_not_records(monkeypatch):
     assert parsed[0]['fields']['completion'] == '旧完成状态' and 'result' not in parsed[0]['fields']
 
 
-def test_preview_marks_existing_and_same_workbook_rows_without_initializing_store():
+def test_identical_lines_and_identical_file_append_again_without_overwriting():
     row = manual_entry()['row']
     raw = excel.schedule_workbook([row, dict(row)])
     preview = intake.workbook('huaxing', ACTOR, raw)
     assert not journal.database_path().exists()
-    assert (preview['count'], preview['existing']) == (1, 1)
-    assert [r['duplicate'] for r in preview['rows']] == [False, True]
+    assert (preview['count'], preview['existing']) == (2, 0)
+    assert [r['duplicate'] for r in preview['rows']] == [False, False]
     intake.manual('huaxing', ACTOR, manual_entry())
     old, = journal.sync('huaxing', [])['items']
-    assert intake.workbook('huaxing', ACTOR, raw, preview['digest']) == {'count': 0, 'existing': 2}
-    assert journal.sync('huaxing', [])['items'] == [old]
-    assert confirm(raw, 'huakang-a') == {'count': 1, 'existing': 1}
+    assert intake.workbook('huaxing', ACTOR, raw, preview['digest']) == {'count': 2, 'existing': 0}
+    assert confirm(raw) == {'count': 2, 'existing': 0}
+    current = journal.sync('huaxing', [])['items']
+    assert len({item['id'] for item in current}) == 5 and old in current
+    assert confirm(raw, 'huakang-a') == {'count': 2, 'existing': 0}
 
 
 def test_different_file_same_fields_and_workbench_photo_reexport():
@@ -130,17 +132,17 @@ def test_different_file_same_fields_and_workbench_photo_reexport():
     original = journal.sync('huaxing', [])['items']
     edited_container = repack(raw)
     p = intake.workbook('huaxing', ACTOR, edited_container)
-    assert (p['count'], p['existing']) == (0, 2)
-    assert all(r['duplicate'] for r in p['rows'])
+    assert (p['count'], p['existing']) == (2, 0)
+    assert not any(r['duplicate'] for r in p['rows'])
     assert edited_container != raw
-    assert confirm(edited_container) == {'count': 0, 'existing': 2}
+    assert confirm(edited_container) == {'count': 2, 'existing': 0}
     reexport = excel.export('huaxing', {'entries': [{'id': r['id'], 'revision': r['revision']} for r in original]})
     assert intake.parse(reexport)[1][0]['photos'][0][0] != intake.parse(raw)[1][0]['photos'][0][0]
-    assert confirm(reexport) == {'count': 0, 'existing': 2}
-    assert journal.sync('huaxing', [])['items'] == original
+    assert confirm(reexport) == {'count': 2, 'existing': 0}
+    assert len(journal.sync('huaxing', [])['items']) == 6
 
     changed_photo = exported_rows('green')
-    assert confirm(changed_photo) == {'count': 1, 'existing': 1}
+    assert confirm(changed_photo) == {'count': 2, 'existing': 0}
     assert all(row in journal.sync('huaxing', [])['items'] for row in original)
 
 
@@ -172,16 +174,14 @@ def test_schedule_reimport_matches_annotated_and_preexisting_plain_workbooks(mon
     assert any(photo[0] not in unmarked_photos for photo in rows[0]['photos'])
     with ZipFile(BytesIO(annotated)) as book:
         assert_rendered_marks(book.read('xl/media/image1.jpeg'))
-    assert intake.parse(annotated, factory='huaxing')[1][0]['verifiedPhotoSources']
-    assert 'verifiedPhotoSources' not in intake.parse(annotated, factory='huakang-a')[1][0]
     for attachment in (plain, annotated):
         preview = intake.workbook('huaxing', ACTOR, attachment)
-        assert (preview['count'], preview['existing']) == (0, 1)
-        assert preview['rows'][0]['duplicate']
-        assert intake.workbook('huaxing', ACTOR, attachment, preview['digest']) == {'count': 0, 'existing': 1}
-    assert journal.sync('huaxing', [])['items'] == [marked]
+        assert (preview['count'], preview['existing']) == (1, 0)
+        assert not preview['rows'][0]['duplicate']
+        assert intake.workbook('huaxing', ACTOR, attachment, preview['digest']) == {'count': 1, 'existing': 0}
+    assert marked in journal.sync('huaxing', [])['items']
 
-    # A mixed workbook still skips the existing row if marks change after preview.
+    # Both rows append even if the original's marks change after preview.
     mixed = BytesIO()
     with closing(load_workbook(BytesIO(annotated))) as book:
         cells = [cell.value for cell in book.active[7]]
@@ -189,12 +189,12 @@ def test_schedule_reimport_matches_annotated_and_preexisting_plain_workbooks(mon
         book.active.append(cells)
         book.save(mixed)
     preview = intake.workbook('huaxing', ACTOR, mixed.getvalue())
-    assert [row['duplicate'] for row in preview['rows']] == [True, False]
+    assert not any(row['duplicate'] for row in preview['rows'])
     journal.save_photo_annotations('huaxing', eid, dict(photoId=pid, annotationVersion=1,
         annotations=[]), ACTOR)
-    assert intake.workbook('huaxing', ACTOR, mixed.getvalue(), preview['digest']) == {'count': 1, 'existing': 1}
-    assert confirm(annotated) == {'count': 0, 'existing': 1}
-    assert len(journal.sync('huaxing', [])['items']) == 2
+    assert intake.workbook('huaxing', ACTOR, mixed.getvalue(), preview['digest']) == {'count': 2, 'existing': 0}
+    assert confirm(annotated) == {'count': 1, 'existing': 0}
+    assert len(journal.sync('huaxing', [])['items']) == 6
 
     # Replacing a JPEG or tampering with the proof does not match the existing record.
     changed, forged = BytesIO(), BytesIO()
@@ -210,7 +210,7 @@ def test_schedule_reimport_matches_annotated_and_preexisting_plain_workbooks(mon
         assert intake.workbook('huaxing', ACTOR, attachment.getvalue())['count'] == 1
 
 
-def test_mixed_batch_first_row_skipped_and_retry_preserves_existing():
+def test_mixed_batch_appends_all_rows_and_retry_preserves_later_edits():
     raw = exported_rows()
     confirm(raw)
     original = journal.sync('huaxing', [])['items']
@@ -221,14 +221,14 @@ def test_mixed_batch_first_row_skipped_and_retry_preserves_existing():
     book.close()
     changed = output.getvalue()
     preview = intake.workbook('huaxing', ACTOR, changed)
-    assert [r['duplicate'] for r in preview['rows']] == [True, False]
-    assert confirm(changed) == {'count': 1, 'existing': 1}
+    assert [r['duplicate'] for r in preview['rows']] == [False, False]
+    assert intake.workbook('huaxing', ACTOR, changed, preview['digest']) == {'count': 2, 'existing': 0}
     current = journal.sync('huaxing', [])['items']
-    assert len(current) == 3 and all(row in current for row in original)
+    assert len(current) == 4 and all(row in current for row in original)
     added, = [row for row in current if row['remark'] == '只改第二条备注']
     journal.save('huaxing', added['id'], {'revision': added['revision'], 'result': '', 'remark': '后来编辑'}, ACTOR)
     after_edit = journal.sync('huaxing', [])['items']
-    assert confirm(changed) == {'count': 0, 'existing': 2}
+    assert intake.workbook('huaxing', ACTOR, changed, preview['digest']) == {'count': 0, 'existing': 2}
     assert journal.sync('huaxing', [])['items'] == after_edit
 
 
@@ -242,7 +242,7 @@ def test_effective_saved_fields_and_literal_identifiers_are_compared():
                  'inspectionExecution': {'sampleQuantity': '0', 'inspector': '现有验货员'}}, ACTOR)
     row = {**body['row'], 'quantity': '20', 'remark': '第一行\n第二行', 'result': 'FAIL',
            'sampleQuantity': '0', 'inspectionProblem': '问题', 'inspector': '现有验货员'}
-    assert confirm(excel.schedule_workbook([row])) == {'count': 0, 'existing': 1}
+    assert confirm(excel.schedule_workbook([row])) == {'count': 1, 'existing': 0}
     for change in ({'poNo': '19'}, {'sampleQuantity': ''}, {'result': 'PASS'}, {'inspectionProblem': ''},
                    {'inspector': '另一位验货员'}, {'dateTo': '2026-11-11'}):
         assert confirm(excel.schedule_workbook([{**row, **change}])) == {'count': 1, 'existing': 0}
@@ -261,7 +261,7 @@ def test_legacy_completion_is_original_data_not_derived_status(monkeypatch):
     assert confirm(legacy_file('first')) == {'count': 1, 'existing': 0}
     old, = journal.sync('huaxing', [])['items']
     assert old['completion'] == '未完成' and old['sourceRecord']['completion'] == '已完成'
-    assert confirm(legacy_file('repacked')) == {'count': 0, 'existing': 1}
+    assert confirm(legacy_file('repacked')) == {'count': 1, 'existing': 0}
     assert confirm(legacy_file('changed')) == {'count': 1, 'existing': 0}
     assert old in journal.sync('huaxing', [])['items']
 
@@ -275,5 +275,5 @@ def test_concurrent_confirmations_of_different_files_check_in_the_write_transact
     with ThreadPoolExecutor(max_workers=2) as pool:
         commits = [pool.submit(intake.workbook, 'huaxing', ACTOR, data, p['digest'])
                    for data, p in zip(content, previews)]
-        assert sorted((f.result()['count'], f.result()['existing']) for f in commits) == [(0, 1), (1, 0)]
-    assert len(journal.sync('huaxing', [])['items']) == 1
+        assert [f.result()['count'] for f in commits] == [1, 1]
+    assert len(journal.sync('huaxing', [])['items']) == 2

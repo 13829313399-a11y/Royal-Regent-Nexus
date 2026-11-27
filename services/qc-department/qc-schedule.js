@@ -350,6 +350,15 @@
       + (key === 'customer' ? ' list="qc-intake-customers"' : '') + '>';
     return '<label class="form-group' + (type === 'textarea' ? ' full' : '') + '">' + label + input + '</label>';
   }
+  function manualRequestKey() {
+    if (root.crypto.randomUUID) return root.crypto.randomUUID();
+    // The manual intake API expects a hyphenated UUID, including on HTTP.
+    const bytes = root.crypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+    return [hex.slice(0,8), hex.slice(8,12), hex.slice(12,16), hex.slice(16,20), hex.slice(20)].join('-');
+  }
   function intakePreview(data) {
     const columns = [['line','Excel 行'], ['duplicate','导入状态'], ...manualFields.filter(([key]) => key !== 'dateTo' && key !== 'remark')];
     for (const field of [['result','验货结果'], ['sampleQuantity','抽查数量'], ['inspectionProblem','验货问题'],
@@ -360,7 +369,7 @@
     return '<div class="qis-intake-scroll" tabindex="0" role="region" aria-label="待导入记录"><table><thead><tr>'
       + columns.map(([,label]) => '<th scope="col">' + escape(label) + '</th>').join('')
       + '</tr></thead><tbody>' + data.rows.map(row => '<tr>' + columns.map(([key]) =>
-        '<td>' + escape(key === 'duplicate' ? (row.duplicate ? '重复，跳过' : '待追加')
+        '<td>' + escape(key === 'duplicate' ? '待追加'
           : key === 'dateFrom' && row.dateTo !== row.dateFrom ? row.dateFrom + ' 至 ' + row.dateTo : row[key] ?? '') + '</td>'
       ).join('') + '</tr>').join('') + '</tbody></table></div>';
   }
@@ -458,16 +467,14 @@
         scheduleBusy = false;
       }
     }
-    async function saved(data, isExcel = false) {
+    async function saved(data) {
       dialog.close();
       await sheet.load();
       if (sheet.model.error) {
         root.showToast?.('保存已确认，列表读取失败，请刷新验货台', 'error');
         return;
       }
-      const message = isExcel && data.existing
-        ? '已追加 ' + data.count + ' 条，跳过重复 ' + data.existing + ' 条'
-        : data.count ? '已追加 ' + data.count + ' 条验货记录' : '这批记录已保存，共 ' + data.existing + ' 条';
+      const message = data.count ? '已追加 ' + data.count + ' 条验货记录' : '这批记录已保存，共 ' + data.existing + ' 条';
       root.showToast?.(message, 'success');
     }
     modeButton.addEventListener('click', () => {
@@ -496,13 +503,12 @@
         previewCount.textContent = '正在核对表格…';
         try {
           const data = await request('preview', file, excelHeaders);
-          if (!Number.isInteger(data.count) || !Number.isInteger(data.existing)
-            || !Array.isArray(data.rows) || data.rows.some(row => typeof row.duplicate !== 'boolean')) {
-            throw Error('当前服务版本尚未启用逐行查重，未导入任何记录。更新服务后请重试。');
+          if (!Array.isArray(data.rows) || data.count !== data.rows.length || !data.digest) {
+            throw Error('导入预览已变化，请刷新后重新选择文件。');
           }
           preview = data;
           find('[data-preview]').innerHTML = intakePreview(preview);
-          previewCount.textContent = preview.sheet + ' · 待追加 ' + preview.count + ' 条 · 重复跳过 ' + preview.existing + ' 条';
+          previewCount.textContent = preview.sheet + ' · 待追加 ' + preview.count + ' 条';
         } catch (error) {
           previewCount.textContent = '';
           clearFile();
@@ -512,14 +518,25 @@
     });
     importButton.addEventListener('click', () => {
       if (!preview?.count) return;
-      void run(async () => saved(await request('import', picker.files[0], {...excelHeaders, 'X-QC-Preview-Digest':preview.digest}), true));
+      void run(async () => saved(await request('import', picker.files[0], {...excelHeaders, 'X-QC-Preview-Digest':preview.digest})));
     });
-    find('form').addEventListener('submit', event => {
+    manual.addEventListener('invalid', event => {
+      const field = event.target;
+      if (field !== Array.from(manual.elements).find(control => control.willValidate && !control.validity.valid)) return;
+      const label = manualFields.find(([key]) => key === field.name)[1];
+      find('[data-error]').textContent = field.validity.valueMissing
+        ? '请填写「' + label + '」' : '请检查「' + label + '」：' + field.validationMessage;
+    }, true);
+    manual.addEventListener('input', () => { find('[data-error]').textContent = ''; });
+    manual.addEventListener('submit', event => {
       event.preventDefault();
       const row = Object.fromEntries(new FormData(event.currentTarget));
       const signature = JSON.stringify(row);
-      if (pending?.signature !== signature) pending = {signature, key:root.crypto.randomUUID()};
-      void run(async () => saved(await request('manual', JSON.stringify({requestKey:pending.key,row}), {'Content-Type':'application/json'})));
+      void run(async () => {
+        if (pending?.signature !== signature) pending = {signature, key:manualRequestKey()};
+        const result = await request('manual', JSON.stringify({requestKey:pending.key,row}), {'Content-Type':'application/json'});
+        await saved(result);
+      });
     });
     find('[data-close]').addEventListener('click', () => dialog.close());
     dialog.addEventListener('cancel', event => { if (scheduleBusy) event.preventDefault(); });
