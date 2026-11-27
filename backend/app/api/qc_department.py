@@ -238,6 +238,8 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         from app.services import qc_report_workbook
         params = request.query_params
         expected = {'kind', 'day', 'customer'}
+        if params.get('kind') == 'issues' and 'endDate' in params:
+            expected.add('endDate')
         if params.get('kind') == 'annual-stats':
             expected.add('result')
         if set(params) != expected or any(len(params.getlist(k)) != 1 for k in params):
@@ -245,7 +247,8 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         scope = (factory_id, params['kind'], params['day'], params['customer'])
         if asset_path == 'api/report-workbook' and request.method in {'GET', 'HEAD'}:
             result = await run_in_threadpool(qc_report_workbook.preview, *scope,
-                can(user, 'qc_inspection:result_write', factory_id, 'qc'), params.get('result', 'FAIL'))
+                can(user, 'qc_inspection:result_write', factory_id, 'qc'), params.get('result', 'FAIL'),
+                end_date=params.get('endDate'))
             if request.method == 'HEAD':
                 return Response(status_code=204, headers=NO_CACHE)
             return await run_in_threadpool(qc_report_workbook.preview_response, result,
@@ -267,7 +270,7 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         except (ValueError, UnicodeError):
             raise HTTPException(400, '无效 JSON') from None
         result = await run_in_threadpool(qc_report_workbook.save_record, scope[0], {'id': user.id}, *scope[1:],
-                                         params.get('result', 'FAIL'), body)
+                                         params.get('result', 'FAIL'), body, end_date=params.get('endDate'))
         return JSONResponse(result, headers=NO_CACHE)
     if asset_path in {"api/daily-report", "api/daily-report/export"} and request.method == "GET":
         exporting = asset_path.endswith("/export")
@@ -566,9 +569,9 @@ async def issue_reports_request(path, request, db, user, factory_id):
     from app.services import qc_issue_reports
     if path=='api/issue-reports' and request.method=='GET':
         keys=set(request.query_params)
-        if not {'date','period'}<=keys or keys-{'date','period','customer'} or any(len(request.query_params.getlist(k))!=1 for k in keys):
+        if not {'date','period'}<=keys or keys-{'date','period','customer','endDate'} or any(len(request.query_params.getlist(k))!=1 for k in keys):
             raise HTTPException(422,'图文报表查询参数不正确')
-        data=await run_in_threadpool(qc_issue_reports.query,factory_id,request.query_params['date'],request.query_params['period'],request.query_params.get('customer',''))
+        data=await run_in_threadpool(qc_issue_reports.query,factory_id,request.query_params['date'],request.query_params['period'],request.query_params.get('customer',''),end_date=request.query_params.get('endDate'))
         data['canExport']=can(user,'qc_inspection:report_export',factory_id,'qc')
         return JSONResponse(data,headers=NO_CACHE)
     if path!='api/issue-reports/excel' or request.method!='POST':raise HTTPException(405,'不支持此操作')

@@ -58,7 +58,7 @@
       {
         "path": "backend/app/api/qc_department.py",
         "symbol": "inspection_sheet_request",
-        "sha256": "816ec1517b6fa83ffe73ed4f3b391ae43c65073df003aac591250da7392b20b9"
+        "sha256": "bc7d97f17980f74d8cc911a6f98a184b61f3ef62668be334343679cb3d39f147"
       },
       {
         "path": "src/views/QcOperationsCenterView.vue",
@@ -113,7 +113,7 @@
       {
         "path": "services/qc-department/qc-weekly-templates.js",
         "symbol": "async function flush",
-        "sha256": "3c242e24e817eed802091ec43650778be57adc052d702e3905e3a7d54281cef7"
+        "sha256": "291bb82dc76f114aea83b457aef3e00cfaf1d282281ea6749e91f1e826eed5ee"
       },
       {
         "path": "backend/app/services/qc_weekly_excel.py",
@@ -153,7 +153,7 @@
       {
         "path": "backend/app/services/qc_issue_reports.py",
         "symbol": "def query(",
-        "sha256": "2e5e67ee5504d98936d2d4371e651853dda702734c418267d0ee6e5ff2b23760"
+        "sha256": "4ec8c8b194e0d52159bf357f90db3bad4c18b3d3f05a6b4f20f3ccafd1b988c3"
       },
       {
         "path": "backend/app/services/qc_options.py",
@@ -163,7 +163,7 @@
       {
         "path": "services/qc-department/qc-issue-reports.js",
         "symbol": "QcIssueReports",
-        "sha256": "061bafac7f7431d9dc3d65a761364d1bc5f87a36c55279fc1782ff3d778d32ca"
+        "sha256": "a27065144d9a5d762d4d3d125a08127f3ed4b7b0752edabecc458bf0ea5fad34"
       },
       {
         "path": "backend/app/api/qc_mobile.py",
@@ -178,12 +178,12 @@
       {
         "path": "backend/app/services/qc_report_workbook.py",
         "symbol": "def preview(",
-        "sha256": "ff656260ee796b23af64ae5552260aa8a0622ec527f87be6595c6a1b1e492e9c"
+        "sha256": "ba73aaf8afd9d5ddabf981a489c8327cfae5fd55137f251cd52dbc98a776fc84"
       },
       {
         "path": "services/qc-department/qc-report-workbook.js",
         "symbol": "function openBook()",
-        "sha256": "bfac6d854e954d397c90f5b31dda276860a20d8d2b0265c09bde5e7b1498831a"
+        "sha256": "f7d09061ebbec8697dc39ec48df1579f6e3446dd51f5d509185850b09f5f1140"
       },
       {
         "path": "services/qc-department/qc-review-workbook.js",

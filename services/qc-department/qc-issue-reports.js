@@ -11,6 +11,7 @@
     closeCurrent?.();
     const trigger=doc.activeElement;
     const inline=!!options.host;
+    const range=period==='weekly'&&options.endDate?{endDate:options.endDate}:{};
     const pageMode=!inline&&(period==='weekly'||period==='yearly');
     const parent=doc.getElementById(period==='weekly'?'page-weekly':'page-analysis');
     const host=parent?.querySelector('.page-inner');
@@ -48,7 +49,7 @@
     }
     function draw(){
       if(!data)return;
-      q('h2').textContent=data.title;q('[data-period]').textContent=data.dateFrom+' 至 '+data.dateTo+(period==='weekly'?'（周一至周日）':'')+' · '+data.total+' 条已审核记录';
+      q('h2').textContent=data.title;q('[data-period]').textContent=data.dateFrom+' 至 '+data.dateTo+(period==='weekly'&&!range.endDate?'（周一至周日）':'')+' · '+data.total+' 条已审核记录';
       const rows=data.tables.issues.slice(page*30,(page+1)*30);
       q('[data-page]').textContent=data.total+' 条 · '+(page+1)+' / '+Math.max(1,Math.ceil(data.total/30));
       q('[data-prev]').disabled=page===0;q('[data-next]').disabled=(page+1)*30>=data.total;
@@ -72,7 +73,7 @@
     async function load(first=false){
       if(busy)return;const token=++generation;data=null;q('[data-export]').disabled=true;status.textContent='正在读取…';status.className='';q('[data-table]').innerHTML='';q('[data-page]').textContent='';q('[data-prev]').disabled=true;q('[data-next]').disabled=true;
       try{
-        const result=await request('api/issue-reports?'+new URLSearchParams({period,date,customer:first&&!options.sharedCustomer?'':customer()}));
+        const result=await request('api/issue-reports?'+new URLSearchParams({period,date,...range,customer:first&&!options.sharedCustomer?'':customer()}));
         if(token!==generation||!el.isConnected)return;
         if(options.sharedCustomer && !customer()) options.onCustomers?.(result.customers);
         if(first && !options.sharedCustomer){customers=result.customers||[];q('[data-customer]').innerHTML='<option value="">全部客户</option>'+customers.map(c=>'<option value="'+esc(c.key)+'">'+esc(c.label)+'</option>').join('');
@@ -82,7 +83,7 @@
           const mount=inspectionTotal=>root.QcReportWorkbook?.mount('weekly','issues',q('[data-table]'),{...result,inspectionTotal},()=>load());
           if(mount()){
             q('footer').hidden=true;
-            if(result.total===0&&root.QcEmptyState){
+            if(result.total===0&&root.QcEmptyState&&!range.endDate){
               // Keep the problem report available while checking for other inspections in this scope.
               const customer=result.customer||'';
               const scope=new URLSearchParams({date:result.date,period,customer});
@@ -114,7 +115,7 @@
       busy=true;options.onBusy?.(true);el.querySelectorAll('.qir-controls select,.qir-controls input,[data-refresh]').forEach(n=>n.disabled=true);draw();status.className='';status.textContent='正在生成 Excel…返回或关闭可取消等待';
       try{
         const on=root.QcExportColumns.enabled('issues');
-        const result=await request('api/issue-reports/excel',{period,date,customer:customer(),sourceRevision:data.sourceRevision,photoQuality:'preview',allowPreviewFallback:false,hideEmptyCols:on});
+        const result=await request('api/issue-reports/excel',{period,date,...range,customer:customer(),sourceRevision:data.sourceRevision,photoQuality:'preview',allowPreviewFallback:false,hideEmptyCols:on});
         if(!el.isConnected)return;
         if(!/^api\/monthly-templates\/excel\/[a-zA-Z0-9.-]+$/.test(result.url))throw Error('下载地址无效');
         if(!await root.QcExportColumns.downloadTicket(result,()=>el.isConnected))return;
