@@ -582,20 +582,119 @@ body.theme-dark #qis-review-controls .qis-open-review-book{--sheet-muted:#c3d0c5
   #page-review .qis-table.qis-pending-summary :is(th,td)[data-column]{padding-inline:4px!important}
 }
 .qis-workbook-photos{
-  position:fixed;inset:0;margin:auto;width:min(680px,calc(100vw - 24px));max-height:calc(100dvh - 24px);
-  overflow:auto;border:1px solid #b8c6bb;border-radius:11px;background:#fff;color:#23382d;padding:16px;
-  box-shadow:0 12px 45px #14231b36;font:14px/1.5 -apple-system,"PingFang SC",sans-serif;
+  --pm-rim:#ffffffc7;
+  --pm-muted:#4d6056;
+  --pm-accent:#24563f;
+  color-scheme:light;
+  position:fixed;inset:0;margin:auto;box-sizing:border-box;
+  width:min(622px,calc(100vw - 32px));max-width:none;max-height:calc(100dvh - 84px);padding:0;
+  overflow:hidden;border:1px solid var(--pm-rim);border-radius:27px;background:#eff4f1;
+  color:#1c2c24;font:14px/1.45 -apple-system,"PingFang SC",sans-serif;
+  box-shadow:0 26px 64px -18px #0d22176b,0 7px 17px #142b1e1a,inset 0 1px 1px #ffffffdb,inset 0 -1px 1px #ffffff8c;
+  transform:translateY(-28px);
 }
-.qis-workbook-photos::backdrop{background:#1d2b2540}
-.qis-workbook-photos header,.qis-workbook-photo-list{display:flex;flex-wrap:wrap;gap:8px}
-.qis-workbook-photos header{justify-content:space-between;align-items:center}
-.qis-workbook-photos p{margin:5px 0}
-.qis-workbook-photos :is(button,label){display:inline-block;padding:4px 9px;margin:0 4px 4px 0;border:1px solid #d8dfd8;border-radius:6px;background:#fff;color:#344d3e;font:inherit;cursor:pointer}
-.qis-workbook-photos label{position:relative;overflow:hidden}
-.qis-workbook-photos input{position:absolute;inset:0;opacity:0;cursor:pointer}
-.qis-workbook-photo-list figure{width:116px;margin:5px 0}
-.qis-workbook-photo-list img{width:100px;height:82px;object-fit:contain;background:#f3f6f2}
-.qis-workbook-photo-list figcaption{white-space:nowrap;text-overflow:ellipsis;overflow:hidden;font-size:11px}
+.qis-workbook-photos[open]{display:flex;flex-direction:column}
+.qis-workbook-photos::backdrop{background:linear-gradient(158deg,#1d2d2530,#13221a4f)}
+@supports (backdrop-filter:blur(1px)){
+  .qis-workbook-photos{
+    background:radial-gradient(ellipse at 9% -10%,#ffffffdb,transparent 60%),
+      linear-gradient(153deg,#fbfffd9e,#f4faf76e 61%,#fbfffdad);
+    backdrop-filter:blur(18px) saturate(1.4);
+  }
+}
+@media(prefers-reduced-transparency:reduce){
+  .qis-workbook-photos{background:#f2f6f3;backdrop-filter:none}
+}
+.qis-workbook-photos [hidden]{display:none}
+.qis-workbook-photos svg{
+  display:block;flex:none;width:17px;height:17px;fill:none;stroke:currentColor;
+  stroke-width:1.65;stroke-linecap:round;stroke-linejoin:round;
+}
+.qis-workbook-photos header{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:start;gap:13px;padding:21px 24px 12px}
+.qis-photo-manager-badge{
+  width:41px;height:41px;display:grid;place-items:center;border:1px solid var(--pm-rim);border-radius:13px;
+  color:var(--pm-accent);background:linear-gradient(150deg,#ffffffd4,#daebe2a1);box-shadow:0 1px 3px #2741311f;
+}
+.qis-photo-manager-badge svg{width:22px;height:22px}
+.qis-workbook-photos h2{margin:-2px 0 3px;font-size:22px;font-weight:680;letter-spacing:.02em;color:inherit}
+.qis-workbook-photos header p{display:flex;flex-wrap:wrap;gap:2px 9px;margin:0;color:var(--pm-muted);font-size:12px;overflow-wrap:anywhere}
+.qis-workbook-photos header p span:first-child{font-weight:600}
+.qis-workbook-photos header p span+span::before{content:"·";padding-right:9px;color:#587164}
+.qis-workbook-photos button,.qis-photo-manager-button{font:inherit;cursor:pointer}
+.qis-photo-manager-close{
+  width:33px;height:33px;display:grid;place-items:center;padding:0;border:1px solid var(--pm-rim);
+  border-radius:50%;background:#ffffff5c;color:#43584e;box-shadow:0 1px 2px #243b2d14;
+}
+.qis-photo-manager-content{min-height:0;overflow:auto;overscroll-behavior:contain;padding:10px 24px 6px}
+.qis-photo-manager-bar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:11px}
+.qis-photo-manager-bar>span{color:var(--pm-muted);font-size:13px;font-weight:630}
+.qis-photo-manager-tools,.qis-photo-manager-actions{display:flex;align-items:center;gap:7px}
+.qis-workbook-photos .qis-photo-manager-button{
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:36px;padding:0 13px;
+  border:1px solid var(--pm-rim);border-radius:999px;background:linear-gradient(#ffffffab,#ffffff54);
+  box-shadow:0 1px 3px #1c38281c;color:#314c3f;font-size:13px;font-weight:590;white-space:nowrap;
+}
+.qis-photo-manager-tools label{position:relative}
+.qis-photo-manager-tools input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer}
+.qis-workbook-photos .qis-photo-manager-plus{color:var(--pm-accent);background:linear-gradient(#f6fff9cf,#d6eadea8)}
+.qis-photo-manager-status{margin:0 0 9px;color:#852e28;font-size:13px}
+.qis-photo-manager-status:empty{display:none}
+.qis-workbook-photo-list,.qis-photo-manager-empty{
+  margin:0;border:1px solid var(--pm-rim);border-radius:17px;background:#ffffff61;
+  box-shadow:inset 0 1px 0 #ffffff85,0 1px 2px #23392c12;
+}
+.qis-workbook-photo-list{list-style:none;padding:0 10px}
+.qis-workbook-photo-list li{display:grid;grid-template-columns:86px minmax(0,1fr) auto;align-items:center;gap:13px;min-height:80px;padding:8px 1px}
+.qis-workbook-photo-list li+li{border-top:1px solid #2c453624}
+.qis-photo-manager-thumb{
+  display:block;position:relative;width:86px;height:62px;overflow:hidden;
+  padding:0;border:1px solid var(--pm-rim);border-radius:10px;background:#eaece9;
+}
+.qis-photo-manager-thumb img{display:block;width:100%;height:100%;object-fit:cover}
+.qis-photo-manager-zoom{
+  position:absolute;right:4px;bottom:4px;padding:3px;border:1px solid #ffffff7d;
+  border-radius:50%;background:#112019ba;color:#fff;
+}
+.qis-photo-manager-zoom svg{width:12px;height:12px}
+.qis-photo-manager-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:650}
+.qis-photo-manager-draft{display:inline-block;margin-top:3px;padding:1px 7px;border-radius:999px;color:#755016;background:#f4ead8;font-size:11px}
+.qis-workbook-photos .qis-photo-manager-remove{
+  display:flex;align-items:center;gap:5px;min-height:36px;padding:0 8px;border:0;border-radius:7px;
+  background:transparent;color:#963c34;font-size:13px;font-weight:550;white-space:nowrap;
+}
+.qis-photo-manager-remove svg{width:15px;height:15px}
+.qis-photo-manager-empty{padding:20px 12px;text-align:center;color:var(--pm-muted);font-size:13px}
+.qis-photo-manager-empty svg{margin:0 auto 6px;width:22px;height:22px}
+.qis-workbook-photos footer{display:flex;justify-content:flex-end;padding:10px 24px 18px}
+.qis-photo-manager-actions{
+  gap:3px;padding:3px;border:1px solid var(--pm-rim);border-radius:999px;background:#ffffff4d;
+  box-shadow:inset 0 1px 0 #ffffff8c,0 2px 6px #1e3e2a1a;
+}
+.qis-workbook-photos .qis-photo-manager-cancel{background:transparent;border-color:transparent;box-shadow:none}
+.qis-workbook-photos .qis-photo-manager-apply{
+  padding-inline:16px;background:linear-gradient(#346a51,#24513c);border-color:#32634c;color:#fff;
+  box-shadow:inset 0 1px 0 #ffffff45,0 1px 3px #1f402d2b;
+}
+.qis-workbook-photos .qis-photo-manager-apply:disabled{background:#d3e1d9b8;border-color:#ffffff75;color:#51685b;box-shadow:none;cursor:default}
+.qis-workbook-photos :is(button:focus-visible,label:focus-within){outline:2px solid #317252;outline-offset:2px}
+@media(max-width:560px){
+  .qis-workbook-photos{
+    inset:auto 0 max(8px,env(safe-area-inset-bottom));margin:0 auto;
+    width:calc(100vw - 16px);max-height:calc(100dvh - 32px);transform:none;border-radius:24px;
+  }
+  .qis-workbook-photos :is(header,footer),.qis-photo-manager-content{padding-inline:16px}
+  .qis-workbook-photos header{gap:9px;padding-top:16px}
+  .qis-workbook-photos footer{padding-bottom:13px}
+  .qis-photo-manager-close{width:44px;height:44px}
+  .qis-workbook-photos :is(.qis-photo-manager-button,.qis-photo-manager-remove){min-height:44px}
+}
+@media(max-width:358px){
+  .qis-workbook-photo-list li{grid-template-columns:66px minmax(0,1fr) auto;gap:8px}
+  .qis-photo-manager-thumb{width:66px;height:59px}
+  .qis-workbook-photos .qis-photo-manager-remove{padding-inline:4px}
+  .qis-photo-manager-remove svg{display:none}
+  .qis-photo-manager-tools .qis-photo-manager-button{padding-inline:8px}
+}
 #page-review .qis-table :is([data-column=result],[data-column=firstResponsible],[data-column=secondResponsible],[data-column=reportStatus],[data-column="inspectionExecution.institution"]){
   box-sizing:border-box;width:calc(var(--qis-short-field) + 17px);min-width:calc(var(--qis-short-field) + 17px);max-width:calc(var(--qis-short-field) + 17px);
 }

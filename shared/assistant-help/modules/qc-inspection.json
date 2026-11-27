@@ -34,7 +34,7 @@
       },
       {
         "title": "录入与导出",
-        "description": "验货台原行内填写、拍照和自动保存不变。待审核首屏用于预览及拖选；点击右上角展开完整工作簿，双击或 F2 编辑，支持选区复制粘贴及向下填充。填充只到同列可编辑空格；Ctrl+S／⌘S 或关闭时明确保存后才写入。保存后仍需拖选记录并点「审核确认」。已审核保持只读，可按权限反审核。报告中心和验货台的原导出入口保留。",
+        "description": "验货台原行内填写、拍照和自动保存不变。待审核首屏用于预览及拖选；点击右上角展开完整工作簿，双击或 F2 编辑，支持选区复制粘贴及向下填充。填充只到同列可编辑空格。点击照片数量可直接查看大图；有编辑权限时可画箭头、圈选并自动保存标记。照片列「管理」可选照片、拍照、移除；点击「应用到工作簿」暂存照片更改。Ctrl+S／⌘S 或关闭时明确保存后才写入工作簿更改。保存后仍需拖选记录并点「审核确认」。已审核保持只读，可按权限反审核。报告中心和验货台的原导出入口保留。",
         "anchor_id": "qc-inspection.overview",
         "precondition": "已登录 Nexus 并选择具体厂区",
         "completion": "在实际页面核对结果；业务写入需由用户操作"
@@ -103,7 +103,7 @@
       {
         "path": "services/qc-department/qc-inspection-summary.js",
         "symbol": "async function load",
-        "sha256": "deed7a2f71c93b44d96a6a25976a7dd7e9eef33861d30d3608c23a7c9fc4fee6"
+        "sha256": "c321775afe7fffbdea6363456e5b9a2d96f06ec2a750ef13ae93421ea768de66"
       },
       {
         "path": "backend/app/services/qc_weekly_templates.py",
@@ -183,12 +183,12 @@
       {
         "path": "services/qc-department/qc-report-workbook.js",
         "symbol": "function openBook()",
-        "sha256": "9d3581e6e5047f07f6b030d1e2c59a0c4bb24fd590be28382153bb1ad5d2e73d"
+        "sha256": "bfac6d854e954d397c90f5b31dda276860a20d8d2b0265c09bde5e7b1498831a"
       },
       {
         "path": "services/qc-department/qc-review-workbook.js",
         "symbol": "QcPendingReviewWorkbook",
-        "sha256": "d18e858018c9aec281c948812fd5b0aad92c2b7c1194307916dce22aff98165e"
+        "sha256": "d514ff5f37f8214907f12af78fbdc1479ebb0771537bf16b8c0940af901f9a42"
       },
       {
         "path": "services/qc-department/qc-inspection-audit.js",

@@ -27,6 +27,7 @@ async function page(withWorkbook=false,withGuides=false){
     const read={};for(const row of rows)if(body.revisions[row.id]===row.revision){row.reviewRead=true;read[row.id]=row.revision;}
     value={read};
    }else if(url.endsWith('/save')){const row=rows.find(r=>r.id===url.split('/').at(-2));assert.equal(row.revision,body.revision);Object.assign(row,{...body,...(body.inspectionExecution?{inspectionExecution:{...row.inspectionExecution,...body.inspectionExecution}}:{})},{revision:row.revision+1,lastLocation:'审核中心 · 待审核'});value=structuredClone(row);}
+  else if(url.endsWith('/photo-info')){const row=rows.find(r=>r.id===url.split('/').at(-2));value={items:structuredClone(row.photos)};}
   else if(url.endsWith('/photos')){const row=rows.find(r=>r.id===url.split('/').at(-2));assert.equal(row.revision,body.revision);row.photos.push({id:'p-'+row.photos.length,name:body.name});row.revision++;value=structuredClone(row);}
   else if(/review\/(confirm|revoke)$/.test(url)){
    const results=body.entries.map(e=>{if(e.id===failId)return{id:e.id,ok:false,message:'并发版本变化',status:409};const row=rows.find(r=>r.id===e.id);assert.equal(row.revision,e.revision);Object.assign(row,{revision:row.revision+1,reviewState:url.endsWith('confirm')?'approved':'pending',confirmedAt:'2026-11-01T17:25:00Z',lastActor:{name:'后台用户'},lastLocation:url.endsWith('confirm')?'审核中心 · 待审核':'审核中心 · 已审核'});if(url.endsWith('revoke'))row.lastReversal={eventId:++eventId,entryId:row.id,customer:row.customer,poNo:row.poNo,at:'2026-11-01T17:26:00Z',actor:{name:'后台用户'},location:'审核中心 · 已审核',reason:body.reason};if(url.endsWith('revoke'))events.push(structuredClone(row.lastReversal));return{id:e.id,ok:true,item:structuredClone(row),...(url.endsWith('revoke')?{reversal:structuredClone(row.lastReversal)}:{})};});value={results,succeeded:results.filter(r=>r.ok).length,failed:results.filter(r=>!r.ok).length};
@@ -34,7 +35,7 @@ async function page(withWorkbook=false,withGuides=false){
   return{ok:true,json:async()=>value};
  };
   for(const file of ['qc-schedule.js','qc-photo-paste.js','qc-inspection-audit.js','qc-inspection-sheet.js'])w.eval(fs.readFileSync(path.join(__dirname,file),'utf8'));
-  if(withWorkbook)for(const file of ['qc-export-columns.js','qc-report-workbook.js','qc-review-workbook.js'])w.eval(fs.readFileSync(path.join(__dirname,file),'utf8'));
+  if(withWorkbook)for(const file of ['qc-photo-shapes.js','qc-inspection-summary.js','qc-export-columns.js','qc-report-workbook.js','qc-review-workbook.js'])w.eval(fs.readFileSync(path.join(__dirname,file),'utf8'));
  await tick();await w.QcInspectionSheet.loadReview('pending');return{dom,w,d:w.document,rows,calls,events,set failId(v){failId=v;}};
 }
 function pointer(p,target,type,y){const e=new p.w.MouseEvent(type,{bubbles:true,cancelable:true,button:0,clientY:y});Object.defineProperties(e,{pointerId:{value:1},pointerType:{value:'mouse'}});target.dispatchEvent(e);}
@@ -114,8 +115,51 @@ test('formal pending preview keeps the B columns and uses the shared sheet with 
     assert.ok(p.d.querySelector('#qis-review-controls .wb-open').closest('div').hidden);
   }finally{p.dom.window.close();}
 });
+test('pending workbook opens the workbench photo editor directly and keeps attachment edits staged',async()=>{
+  const p=await page(true);try{
+    p.rows[0].photos=[{id:'p1',name:'第一张.jpg'},{id:'p2',name:'第二张.jpg'}];
+    await p.w.QcInspectionSheet.loadReview('pending');
+    const q=selector=>p.d.querySelector(selector);
+    q('#qis-review-controls .wb-open').click();await tick();
+    const grid=q('#wb-grid').shadowRoot;
+    const photos=grid.querySelector('[data-review-entry=a] [data-field=photos]');
+    const [open,manage]=photos.querySelectorAll('button');
+    open.click();await tick();
+    const viewer=q('#qis-photo-viewer[open]');
+    assert.ok(viewer.querySelector('[data-mark-tool=arrow]'));
+    assert.equal(viewer.querySelector('img').alt,'第一张.jpg');
+    assert.equal(q('#wb-value').value,'2 张');
+    assert.equal(q('.qis-workbook-photos'),null);
+    q('#wb-close').click();await tick();
+    assert.equal(q('#wb-dialog').open,true);
+    viewer.dispatchEvent(new p.w.Event('cancel',{cancelable:true}));
+    assert.equal(grid.activeElement,open);
+    manage.click();
+    const dialog=()=>q('dialog[aria-labelledby="qis-photo-manager-title"]');
+    const control=label=>[...dialog().querySelectorAll('button')].find(button=>button.textContent===label);
+    assert.equal(dialog().querySelectorAll('input[type=file]').length,2);
+    assert.equal(control('应用到工作簿').disabled,true);
+    control('移除').click();
+    assert.equal(control('应用到工作簿').disabled,false);
+    control('取消').click();
+    assert.equal(p.w.QcReportWorkbook.navigationState().dirty,false);
+    assert.equal(grid.activeElement,manage);
+    manage.click();
+    assert.equal(dialog().querySelectorAll('li').length,2);
+    control('移除').click();
+    control('应用到工作簿').click();
+    assert.equal(p.w.QcReportWorkbook.navigationState().dirty,true);
+    assert.equal(grid.activeElement,manage);
+    open.click();await tick();
+    assert.equal(q('#qis-photo-viewer img').alt,'第二张.jpg');
+    assert.equal(q('#qis-photo-viewer [data-photo-prev]').hidden,true);
+    assert.equal(p.rows[0].photos.length,2);
+  }finally{p.dom.window.close();}
+});
 test('formal pending workbook preserves read-only permissions and filters without changing approval state',async()=>{
   const p=await page(true);try{
+    p.rows[1].photos=[{id:'readonly',name:'只读.jpg'}];
+    await p.w.QcInspectionSheet.loadReview('pending');
     const input=p.d.querySelector('[data-rfilter=search]');
     input.value='PO1';input.dispatchEvent(new p.w.Event('input',{bubbles:true}));
     p.w.__QC_NEXUS.workflow.edit=false;
@@ -128,6 +172,12 @@ test('formal pending workbook preserves read-only permissions and filters withou
     const td=grid.querySelector('[data-field=inspectionProblem]');td.click();
     td.dispatchEvent(new p.w.KeyboardEvent('keydown',{key:'F2',bubbles:true,composed:true,cancelable:true}));
     assert.equal(grid.querySelector('.cell-editor'),null);
+    const photos=grid.querySelector('[data-field=photos]');
+    assert.equal(photos.querySelectorAll('button').length,1);
+    photos.querySelector('button').click();await tick();
+    const viewer=p.d.querySelector('#qis-photo-viewer[open]');
+    assert.equal(viewer.querySelector('img').alt,'只读.jpg');
+    assert.equal(viewer.querySelector('[data-mark-tool]'),null);
     assert.equal(p.calls.some(c=>c.url.endsWith('/save')||c.url.endsWith('/confirm')),false);
     assert.equal(p.rows[1].reviewState,'pending');
   }finally{p.dom.window.close();}
