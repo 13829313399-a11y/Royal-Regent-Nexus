@@ -14,7 +14,7 @@ export default function App() {
   useEffect(() => {
     let disposed = false
     let authorized = false
-    const lock = () => { if (!disposed) { setReady(false); setError('会话或权限已失效，请从业务部重新打开。') } }
+    const lock = () => { if (!disposed) { setReady(false); setError('会话或权限已失效，请从会计部重新打开。') } }
     window.addEventListener('mainland-invoice-access-lost', lock)
     startSession(factory).then(() => { if (!disposed) { authorized = true; setReady(true) } }).catch((e: Error) => { if (!disposed) setError(e.message) })
     const validate = () => { if (authorized) void assertOperationAllowed().catch(lock) }

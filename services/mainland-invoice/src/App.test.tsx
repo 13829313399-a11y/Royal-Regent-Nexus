@@ -23,6 +23,6 @@ describe('invoice UI session invalidation', () => {
     await waitFor(() => expect(screen.getByText('A 的上传和输出状态')).toBeTruthy())
     window.dispatchEvent(new Event('focus'))
     await waitFor(() => expect(screen.queryByText('A 的上传和输出状态')).toBeNull())
-    expect(screen.getByRole('status').textContent).toContain('权限已失效')
+    expect(screen.getByRole('status').textContent).toBe('会话或权限已失效，请从会计部重新打开。')
   })
 })
