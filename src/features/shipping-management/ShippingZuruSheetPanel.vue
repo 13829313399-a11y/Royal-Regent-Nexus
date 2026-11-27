@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { newId } from './ids'
 import { computed, onMounted, ref, watch } from 'vue'
 import { Download, Plus, Trash2 } from '@lucide/vue'
 import { getApiErrorMessage } from '@/lib/http'
@@ -155,7 +156,7 @@ async function loadDraft() {
 
 function blankLine(): ZuruLine {
   return {
-    id: crypto.randomUUID(), tradingHouse: '', contract: '', filingCode: '', declareCode: '', brand: '',
+    id: newId(), tradingHouse: '', contract: '', filingCode: '', declareCode: '', brand: '',
     coefficient: null, quantity: null, cartons: null, grossWeight: null, netWeight: null, cbm: null,
     cbmPerCarton: null, country: draft.value?.header.destinationCountry ?? '', grossPerCarton: null,
     netPerCarton: null, remark: '', po: '',
@@ -179,7 +180,7 @@ function addScheduleProduct(index: number) {
   const cartons = Number(item.cartons) || null
   const coefficient = Number(item.coefficient) || (quantity && cartons ? quantity / cartons : null)
   draft.value.lines.push({
-    id: crypto.randomUUID(),
+    id: newId(),
     tradingHouse: '',
     contract: String(item.contract_no || ''),
     filingCode: String(item.product_code || ''),

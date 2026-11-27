@@ -356,6 +356,11 @@ def loading_sheet_preview(db: Db, user: User, sheet_id: str, factory_id: str = Q
     return shipping_loading.preview_sheet(db, user, factory_id, sheet_id)
 
 
+@router.patch('/loading-sheets/{sheet_id}/header')
+def loading_sheet_header_update(db: Db, user: User, sheet_id: str, body: dict, factory_id: str = Query(...)):
+    return shipping_loading.update_sheet_header(db, user, factory_id, sheet_id, body)
+
+
 @router.delete('/loading-sheets/{sheet_id}')
 def loading_sheet_delete(db: Db, user: User, sheet_id: str, factory_id: str = Query(...)):
     return shipping_loading.delete_sheet(db, user, factory_id, sheet_id)
@@ -413,6 +418,11 @@ def generated_doc_save(db: Db, user: User, doc_id: str, factory_id: str = Query(
     return shipping_autogen.save_doc(db, user, factory_id, doc_id)
 
 
+@router.patch('/generated-docs/{doc_id}/header')
+def generated_doc_header_update(db: Db, user: User, doc_id: str, body: dict, factory_id: str = Query(...)):
+    return shipping_autogen.update_doc_header(db, user, factory_id, doc_id, body)
+
+
 @router.delete('/generated-docs/{doc_id}')
 def generated_doc_delete(db: Db, user: User, doc_id: str, factory_id: str = Query(...)):
     return shipping_autogen.delete_doc(db, user, factory_id, doc_id)
@@ -459,6 +469,14 @@ def generated_doc_download(db: Db, user: User, doc_id: str, factory_id: str = Qu
 def schedule_import(db: Db, user: User, factory_id: str = Query(...), history: bool = Query(False)):
     service.authorize(user, factory_id, 'write')
     return shipping_schedule_import.import_factory_schedule(db, factory_id, include_history=history)
+
+
+@router.post('/code-mappings/export')
+def code_mapping_export(db: Db, user: User, body: dict):
+    factory_id = str(body.get('factory_id') or '')
+    service.authorize(user, factory_id, 'write')
+    rows = body.get('rows') if isinstance(body.get('rows'), list) else []
+    return shipping_code_mapping.export_rows(rows, str(body.get('date') or ''))
 
 
 @router.post('/code-mappings/import')

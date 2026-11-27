@@ -378,7 +378,7 @@ describe('ShippingGeneratedDocs schedule import fallback', () => {
     await flushPromises()
 
     const actionButtons = wrapper.findAll('tbody td:last-child button').map((btn) => btn.text().trim())
-    expect(actionButtons).toEqual(['下载', '查看', '打开'])
+    expect(actionButtons).toEqual(['下载', '查看', '打开', '异常'])
 
     await wrapper.findAll('tbody td:last-child button')[0]!.trigger('click')
     await flushPromises()

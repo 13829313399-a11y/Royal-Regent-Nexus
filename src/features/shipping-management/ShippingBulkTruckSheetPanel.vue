@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { newId } from './ids'
 import { computed, onMounted, ref, watch } from 'vue'
 import { Download, Plus, Trash2 } from '@lucide/vue'
 import { getApiErrorMessage } from '@/lib/http'
@@ -148,7 +149,7 @@ function lineFromSeed(row: Record<string, unknown>): BulkTruckLine {
   const cbm = row.cbm == null ? null : Number(row.cbm)
   const code = String(row.filingCode || row.declareCode || row.product_code || '').trim()
   return {
-    id: crypto.randomUUID(),
+    id: newId(),
     tradingHouse: String(row.tradingHouse || header.tradingHouse || header.brandName || 'ZURU').trim(),
     contract: String(row.contract || row.contract_no || header.contractNo || '').trim(),
     filingCode: code,
@@ -271,7 +272,7 @@ async function runSearch() {
       if (!code) continue
       const cartons = Number(item.cartons) || 0
       const mapped: BulkTruckLine = {
-        id: crypto.randomUUID(),
+        id: newId(),
         tradingHouse: draft.value.header.tradingHouse || String(item.customer || '') || 'ZURU',
         contract: String(item.contract_no || ''),
         filingCode: code,
@@ -359,7 +360,7 @@ function recalc(line: BulkTruckLine) {
 function addLine() {
   if (!draft.value) return
   draft.value.lines.push({
-    id: crypto.randomUUID(), tradingHouse: 'ZURU', contract: '', filingCode: '', declareCode: '',
+    id: newId(), tradingHouse: 'ZURU', contract: '', filingCode: '', declareCode: '',
     coefficient: null, quantity: null, cartons: null, boards: '', grossWeight: null, netWeight: null,
     cbm: null, country: draft.value.lines[0]?.country ?? '', grossPerCarton: null, netPerCarton: null,
     cbmPerCarton: null, brand: '', so: '', po: '', shippingNote: '', remark: '', manual: true,

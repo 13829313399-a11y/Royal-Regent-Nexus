@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { newId } from './ids'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { Download, Plus, Trash2 } from '@lucide/vue'
 import { getApiErrorMessage } from '@/lib/http'
 import {
@@ -11,6 +12,7 @@ import {
   listLoadingSheets,
   lookupScheduleLines,
   openLoadingSheet,
+  updateLoadingSheetHeader,
   searchScheduleProducts,
   type LoadingDraft,
   type LoadingHeader,
@@ -52,6 +54,74 @@ const sheetMessage = ref('')
 const sheetLoading = ref(false)
 const sheetBusy = ref(false)
 const sheetDeleteArmed = ref(false)
+const EXCEPTION_KEY = `shipping-loading-exceptions:${props.factoryId}`
+const exceptionReasons = ['约不到仓', '仓库临时取消收货', '入仓号失效', '入仓件数不符', '外箱破损', '体积超申报', '超重', '截仓后送到', '危险品未申报', '其他']
+function loadExceptions(): Record<string, string> {
+  if (typeof window === 'undefined' || !window.localStorage) return {}
+  try { return JSON.parse(window.localStorage.getItem(EXCEPTION_KEY) || '{}') as Record<string, string> } catch { return {} }
+}
+const exceptions = ref<Record<string, string>>(loadExceptions())
+const exceptionSheet = ref<LoadingSheetRecord | null>(null)
+const exceptionSaving = ref(false)
+const exceptionForm = reactive({
+  reason: '', contractNo: '', soNo: '', vessel: '', voyage: '',
+  plate: '', containerNo: '', sealNo: '', tareWeight: '',
+})
+
+async function openException(sheet: LoadingSheetRecord) {
+  exceptionSheet.value = sheet
+  exceptionForm.reason = exceptions.value[sheet.id] || ''
+  sheetBusy.value = true
+  try {
+    const detail = await getLoadingSheet(props.factoryId, sheet.id)
+    const header = detail.header || {}
+    exceptionForm.contractNo = String(header.contractNo || '')
+    exceptionForm.soNo = String(header.soNo || '')
+    exceptionForm.vessel = String(header.vessel || '')
+    exceptionForm.voyage = String(header.voyage || '')
+    exceptionForm.plate = String(header.plate || '')
+    exceptionForm.containerNo = String(header.containerNo || '')
+    exceptionForm.sealNo = String(header.sealNo || '')
+    exceptionForm.tareWeight = String(header.tareWeight || '')
+  } catch (error) {
+    sheetMessage.value = `读取失败：${getApiErrorMessage(error)}`
+    exceptionSheet.value = null
+  } finally {
+    sheetBusy.value = false
+  }
+}
+
+async function saveException() {
+  if (!exceptionSheet.value) return
+  exceptionSaving.value = true
+  try {
+    const result = await updateLoadingSheetHeader(props.factoryId, exceptionSheet.value.id, {
+      contractNo: exceptionForm.contractNo,
+      soNo: exceptionForm.soNo,
+      vessel: exceptionForm.vessel,
+      voyage: exceptionForm.voyage,
+      plate: exceptionForm.plate,
+      containerNo: exceptionForm.containerNo,
+      sealNo: exceptionForm.sealNo,
+      tareWeight: exceptionForm.tareWeight,
+    })
+    const next = { ...exceptions.value }
+    if (exceptionForm.reason) next[exceptionSheet.value.id] = exceptionForm.reason
+    else delete next[exceptionSheet.value.id]
+    exceptions.value = next
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(EXCEPTION_KEY, JSON.stringify(next))
+    }
+    await loadSheets()
+    sheetMessage.value = `已更新并覆盖 ${result.filename}`
+    exceptionSheet.value = null
+    emit('notify', `异常处理已保存，原文件已替换：${result.path}`)
+  } catch (error) {
+    sheetMessage.value = `保存失败：${getApiErrorMessage(error)}`
+  } finally {
+    exceptionSaving.value = false
+  }
+}
 const sheetPanelOpen = ref(true)
 const sheetSearch = ref('')
 const previewState = ref<{ sheet: LoadingSheetRecord; filename: string; path: string; sheets: WorkbookPreviewSheet[] } | null>(null)
@@ -182,7 +252,7 @@ function lineFromSchedule(item: Record<string, unknown>): LoadingLine {
   const quantity = Number(item.quantity) || null
   const cartons = Number(item.cartons) || null
   return {
-    id: crypto.randomUUID(),
+    id: newId(),
     tradingCompany: 'DK',
     contract: String(item.contract_no || ''),
     filingCode: String(item.product_code || ''),
@@ -292,7 +362,7 @@ async function loadDraft() {
 function addLine() {
   if (!draft.value) return
   draft.value.lines.push({
-    id: crypto.randomUUID(), tradingCompany: 'DK',
+    id: newId(), tradingCompany: 'DK',
     contract: draft.value.header.contractNo?.trim() || draft.value.lines[0]?.contract || '',
     filingCode: '', declareCode: '', coefficient: null, quantity: null, cartons: null, grossWeight: null, netWeight: null,
     cbm: null, category: '塑胶', grossPerCarton: null, netPerCarton: null, description: '', department: 'W', pallet: null,
@@ -635,19 +705,19 @@ function mergeScheduleLines(imported: LoadingLine[], scheduled: LoadingLine[], c
   for (const line of imported) {
     const matches = byCode.get(lineCode(line)) ?? []
     if (!matches.length) {
-      merged.push({ ...line, id: crypto.randomUUID(), contract: contract || line.contract })
+      merged.push({ ...line, id: newId(), contract: contract || line.contract })
       continue
     }
     for (const match of matches) {
       const key = `${match.contract}|${lineCode(match)}`
       if (emitted.has(key)) continue
       emitted.add(key)
-      merged.push({ ...match, id: crypto.randomUUID(), contract: match.contract || contract })
+      merged.push({ ...match, id: newId(), contract: match.contract || contract })
     }
   }
   if (!merged.length) {
     for (const line of scheduled) {
-      merged.push({ ...line, id: crypto.randomUUID(), contract: line.contract || contract })
+      merged.push({ ...line, id: newId(), contract: line.contract || contract })
     }
   }
   return merged
@@ -730,8 +800,6 @@ watch(() => props.initialDraft, async (value) => {
       ensureTableName()
       if (rebooked) {
         message.value = '已按产品编号匹配新排期，合同号 / SO / 订舱号 / 截单日已更新为新排期。'
-      } else if (!contractMatches) {
-        message.value = '邮件合同号与匹配排期合同号不一致，已保留邮件合同号，未覆盖。'
       }
       await fillMissingDescriptions()
       return
@@ -1018,7 +1086,8 @@ watch(() => props.initialDraft, async (value) => {
               <td class="px-2 py-1.5 text-right whitespace-nowrap">
                 <button type="button" class="mr-2 text-emerald-700" @click="downloadSheet(sheet)">下载</button>
                 <button type="button" class="mr-2 text-emerald-700" @click="viewSheet(sheet)">查看</button>
-                <button type="button" class="text-emerald-700" @click="openSheet(sheet)">打开</button>
+                <button type="button" class="mr-2 text-emerald-700" @click="openSheet(sheet)">打开</button>
+                <button type="button" class="max-w-[110px] truncate rounded border border-rose-200 px-1.5 py-0.5 text-[10px] text-rose-600" :title="exceptions[sheet.id] || '异常处理'" @click="openException(sheet)">{{ exceptions[sheet.id] || '异常' }}</button>
               </td>
             </tr>
           </tbody>
@@ -1053,5 +1122,28 @@ watch(() => props.initialDraft, async (value) => {
       @close="previewState = null"
       @download="downloadSheet(previewState.sheet)"
     />
+      <div v-if="exceptionSheet" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" @click.self="exceptionSheet = null">
+        <div class="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-xl bg-white p-4 shadow-xl" role="dialog" aria-label="柜货单异常处理">
+          <div class="flex items-center justify-between">
+            <h3 class="text-[14px] font-bold text-emerald-950">异常处理 · {{ exceptionSheet.filename }}</h3>
+            <button type="button" class="text-slate-400 hover:text-slate-600" @click="exceptionSheet = null">关闭</button>
+          </div>
+          <div class="mt-3 grid gap-2 sm:grid-cols-2">
+            <label class="text-[11px] text-slate-500">异常原因<select v-model="exceptionForm.reason" class="mt-1 h-8 w-full rounded border border-rose-200 px-2 text-[12px]"><option value="">无</option><option v-for="reason in exceptionReasons" :key="reason" :value="reason">{{ reason }}</option></select></label>
+            <label class="text-[11px] text-slate-500">合同号<input v-model="exceptionForm.contractNo" class="mt-1 h-8 w-full rounded border border-emerald-200 px-2 text-[12px]"></label>
+            <label class="text-[11px] text-slate-500">柜 S/O<input v-model="exceptionForm.soNo" class="mt-1 h-8 w-full rounded border border-emerald-200 px-2 text-[12px]"></label>
+            <label class="text-[11px] text-slate-500">船名<input v-model="exceptionForm.vessel" class="mt-1 h-8 w-full rounded border border-emerald-200 px-2 text-[12px]"></label>
+            <label class="text-[11px] text-slate-500">航次<input v-model="exceptionForm.voyage" class="mt-1 h-8 w-full rounded border border-emerald-200 px-2 text-[12px]"></label>
+            <label class="text-[11px] text-slate-500">车牌<input v-model="exceptionForm.plate" class="mt-1 h-8 w-full rounded border border-emerald-200 px-2 text-[12px]"></label>
+            <label class="text-[11px] text-slate-500">柜号<input v-model="exceptionForm.containerNo" class="mt-1 h-8 w-full rounded border border-emerald-200 px-2 text-[12px]"></label>
+            <label class="text-[11px] text-slate-500">封条号<input v-model="exceptionForm.sealNo" class="mt-1 h-8 w-full rounded border border-emerald-200 px-2 text-[12px]"></label>
+            <label class="text-[11px] text-slate-500">空柜重<input v-model="exceptionForm.tareWeight" class="mt-1 h-8 w-full rounded border border-emerald-200 px-2 text-[12px]"></label>
+          </div>
+          <div class="mt-4 flex justify-end gap-2">
+            <button type="button" class="h-8 rounded-lg border border-emerald-200 px-3 text-[12px] font-semibold text-emerald-800" @click="exceptionSheet = null">取消</button>
+            <button type="button" class="h-8 rounded-lg bg-emerald-700 px-4 text-[12px] font-semibold text-white disabled:opacity-60" :disabled="exceptionSaving" @click="saveException">{{ exceptionSaving ? '保存中…' : '保存并替换原文件' }}</button>
+          </div>
+        </div>
+      </div>
   </section>
 </template>

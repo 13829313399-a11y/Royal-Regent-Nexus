@@ -194,7 +194,7 @@ def _collect_factory_rows(db, factory_id: str) -> tuple[list[dict], int]:
         select(ShippingGeneratedDoc)
         .where(
             ShippingGeneratedDoc.factory_id == factory_id,
-            ShippingGeneratedDoc.module.in_(('supplement', 'truck_export')),
+            ShippingGeneratedDoc.module.in_(('supplement', 'truck_export', 'truck_bulk', 'truck_buzzbee')),
         )
         .order_by(ShippingGeneratedDoc.created_at.desc())
     ).all()

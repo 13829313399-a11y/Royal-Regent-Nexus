@@ -1108,6 +1108,29 @@ def preview_sheet(db, user: AuthContext, factory_id: str, sheet_id: str) -> dict
     return {'opened': False, 'path': '', 'filename': filename, 'sheets': file_open.workbook_preview(filename, content)}
 
 
+def update_sheet_header(db, user: AuthContext, factory_id: str, sheet_id: str, payload: dict) -> dict:
+    authorize(user, factory_id, 'write')
+    row, header, lines = _load_sheet(db, user, factory_id, sheet_id)
+    allowed = ('contractNo', 'soNo', 'vessel', 'voyage', 'plate', 'containerNo', 'sealNo', 'tareWeight')
+    for key in allowed:
+        if key in payload:
+            header[key] = str(payload.get(key) or '')
+    row.header_json = json.dumps(header, ensure_ascii=False)
+    db.commit()
+    filename, content, variant = _render_sheet_bytes(db, user, factory_id, sheet_id)
+    export_root = shipping_exports.EXPORT_ROOT / 'SO 出货表'
+    target = shipping_exports.build_so_target(export_root, filename)
+    if not target.exists():
+        safe = shipping_exports._safe_name(filename)
+        target = next((item for item in export_root.glob(f'*年*月/{safe}') if item.exists()), target)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+    except OSError:
+        target = Path(shipping_exports.save_import_file('so_zuru' if variant == 'hq' else 'so_dk', filename, content) or '')
+    return {'updated': True, 'filename': filename, 'path': str(target)}
+
+
 def delete_sheet(db, user: AuthContext, factory_id: str, sheet_id: str) -> dict:
     authorize(user, factory_id, 'write')
     row = db.get(ShippingLoadingSheet, sheet_id)
