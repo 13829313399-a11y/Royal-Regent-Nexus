@@ -5,14 +5,14 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import Workspace from '../FabricProcurementWorkspace.vue'
 import { purchaseSearchKey } from '../purchaseSearch'
-import type { PurchaseDetail, PurchasePreview } from '@/api/fabricProcurement'
+import type { PurchaseDetail, PurchaseFacts, PurchasePreview } from '@/api/fabricProcurement'
 
 const api = vi.hoisted(() => ({ preview: vi.fn(), apply: vi.fn(), groups: vi.fn(), lines: vi.fn(), detail: vi.fn(), imports: vi.fn(), withdrawalPreview: vi.fn(), withdraw: vi.fn(), reviewChanges: vi.fn() }))
 vi.mock('@/api/fabricProcurement', () => ({ fabricProcurementApi: api }))
 const session = reactive({ currentUser: { id: 'keeper' }, authorizationVersion: 0 })
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => session }))
 let wrapper: VueWrapper | undefined
-afterEach(() => { wrapper?.unmount(); wrapper = undefined; document.body.innerHTML = ''; vi.restoreAllMocks() })
+afterEach(() => { wrapper?.unmount(); wrapper = undefined; document.body.innerHTML = ''; vi.restoreAllMocks(); vi.unstubAllGlobals() })
 beforeEach(() => { pendingFabricImports.clear(); pendingFabricMasterSaves.clear(); session.currentUser = { id: 'keeper' }; session.authorizationVersion = 0; vi.clearAllMocks(); api.groups.mockResolvedValue({ total: 0, line_total: 0, groups: [] }); api.imports.mockResolvedValue([]); api.lines.mockResolvedValue({ total: 0, items: [] }) })
 const counts = { total: 2, new: 1, updated: 0, unchanged: 0, blocked: 1, warnings: 0, pending: 1, returned: 1 }
 const preview = { preview_token: 'a'.repeat(64), revision: 0, counts, sheets: ['未回物料', '已回料'], ignored_sheets: [], filtered_total: 2, offset: 0, limit: 100, items: [] } as PurchasePreview
@@ -32,9 +32,17 @@ async function file() {
 function button(text: string) { return wrapper!.findAll('button').find(b => b.text() === text)! }
 function dialogButton(text: string) { return [...document.querySelectorAll('button')].find(b => b.textContent?.trim() === text)! }
 
+const purchaseFacts: PurchaseFacts = {
+  status: 'PENDING', source_line_id: 'source-1', order_no: 'PO-11', supplier: '供货方',
+  production_no: '', plan_no: '', material_code: '', old_material_code: '', material_name: '布料', unit: '米',
+  contract_no: '', ordered_quantity: '3', reported_received_quantity: '0', unit_price: null,
+  order_date: null, order_date_raw: '', delivery_detail: '', delivery_note_no: '', delivery_note_date: null,
+  delivery_note_date_raw: '', reported_receipt_date: null, reported_receipt_date_raw: '',
+  supplier_reply: '', supplier_reply_date: null, second_reply: '', second_reply_date: null, note: '', warehouse_note: '',
+}
 const linkedDetail = {
   id: 'source-1', revision: 1, active: true, evidence: [], warehouse_outstanding_quantity: '3',
-  facts: { order_no: 'PO-11', supplier: '供货方', material_name: '布料', unit: '米' },
+  facts: purchaseFacts,
 } as PurchaseDetail
 async function openLinkedPurchase() {
   const router = createRouter({ history: createMemoryHistory(), routes: [{
@@ -53,6 +61,45 @@ async function openLinkedPurchase() {
 }
 
 describe('real fabric procurement workspace', () => {
+  it.each([404, 403, 503])('identifies and copies the original detail on read failure %s, then clears the target on successful retry', async status => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    api.detail.mockRejectedValueOnce({ isAxiosError: true, response: { status } })
+    const router = await openLinkedPurchase()
+    expect(wrapper!.get('[aria-label="原采购明细读取目标"]').text()).toContain('source-1')
+    await button('复制完整编号').trigger('click'); await flushPromises()
+    expect(writeText).toHaveBeenCalledExactlyOnceWith('source-1')
+    expect(api.detail).toHaveBeenCalledTimes(1)
+    if (status === 404) {
+      await button('返回采购列表').trigger('click'); await flushPromises()
+      expect(router.currentRoute.value.query.purchase_id).toBeUndefined()
+    } else {
+      api.detail.mockResolvedValueOnce(linkedDetail)
+      await button('重试原采购明细').trigger('click'); await flushPromises()
+      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('PO-11')
+    }
+    expect(wrapper!.find('[aria-label="原采购明细读取目标"]').exists()).toBe(false)
+  })
+
+  it('does not attach old copy feedback to another original detail or account', async () => {
+    let finish!: () => void
+    const writeText = vi.fn(() => new Promise<void>(ok => { finish = ok }))
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    api.detail.mockRejectedValue({ isAxiosError: true, response: { status: 403 } })
+    const router = await openLinkedPurchase()
+    await button('复制完整编号').trigger('click')
+    await router.push('/receipts?factory=huakang-c&view=pending&purchase_id=source-2'); await flushPromises()
+    finish(); await flushPromises()
+    const target = () => wrapper!.get('[aria-label="原采购明细读取目标"]')
+    expect(target().text()).toContain('source-2')
+    expect(target().text()).not.toContain('已复制')
+    await button('复制完整编号').trigger('click')
+    session.currentUser = { id: 'next-keeper' }; await flushPromises()
+    finish(); await flushPromises()
+    expect(target().text()).not.toContain('已复制')
+    expect(writeText.mock.calls).toEqual([['source-1'], ['source-2']])
+  })
+
   it.each([
     [{ isAxiosError: true, code: 'ERR_NETWORK' }, '读取失败'],
     [{ isAxiosError: true, code: 'ECONNABORTED' }, '读取失败'],
@@ -507,7 +554,7 @@ describe('real fabric procurement workspace', () => {
     const detail = {
       id: 'L1', revision: 2, active: true, can_review: true, evidence: [],
       starting_chase_quantity: '37', warehouse_received_quantity: '10', warehouse_outstanding_quantity: '27',
-      promise_text: '下周交货', facts: { order_no: 'CGDD1', supplier: '供货方', material_code: '000123', material_name: '白色布', unit: '码' },
+      promise_text: '下周交货', facts: { ...purchaseFacts, order_no: 'CGDD1', supplier: '供货方', material_code: '000123', material_name: '白色布', unit: '码' },
     } as PurchaseDetail
     api.lines.mockResolvedValue({ total: 1, items: [detail] })
     api.detail.mockResolvedValue(detail)
@@ -536,7 +583,7 @@ describe('real fabric procurement workspace', () => {
       id: 'L1', revision: 2, active: true, evidence: [], warehouse_received_quantity: '10',
       warehouse_outstanding_quantity: null, receipt_quantity_review_required: true,
       receipt_identity_review_required: scenario.receipt_identity_review_required, can_review: scenario.can_review,
-      facts: { order_no: 'CGDD1', supplier: '供货方', material_name: '白色布', unit: '码' },
+      facts: { ...purchaseFacts, order_no: 'CGDD1', supplier: '供货方', material_name: '白色布', unit: '码' },
     } as PurchaseDetail
     api.lines.mockResolvedValue({ total: 1, items: [detail] })
     api.detail.mockResolvedValue(detail)
