@@ -9,7 +9,7 @@ vi.mock('./api', () => ({ api: { config: mocks.config }, http: { post: mocks.pos
   errorMessage: async (e: Error) => e.message }))
 beforeEach(() => vi.clearAllMocks())
 afterEach(() => vi.restoreAllMocks())
-it.each(['caixing','edu','dickie'])('opens the actual workspace scoped to %s', async (code) => {
+it.each(['caixing','edu','dickie','seasons'])('opens the actual workspace scoped to %s', async (code) => {
   mocks.config.mockResolvedValue({factory_id:'huaxing',customers:[{code,name:code}]})
   const wrapper=mount(HuaxingTrialApp); await flushPromises()
   expect(wrapper.getComponent(Workspace).props()).toMatchObject({localOnly:true,factoryId:'huaxing',customerCodes:[code],initialCustomerCode:code})

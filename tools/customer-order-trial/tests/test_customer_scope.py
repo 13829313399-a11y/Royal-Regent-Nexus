@@ -46,7 +46,7 @@ def test_invalid_scope_does_not_initialize_database(tmp_path, codes):
 
 @pytest.mark.parametrize('factory,code,other',[('huakang-a','zuru','green-toys'),
     *[('huadeng', c, 'casdon' if c != 'casdon' else 'jakks') for c in ('casdon','jakks','goliath','simba','spin')],
-    *[('huaxing', c, 'buzzbee') for c in ('caixing','edu','dickie')]])
+    *[('huaxing', c, 'buzzbee') for c in ('caixing','edu','dickie','seasons')]])
 def test_single_customer_scope(factory,code,other,tmp_path):
     for _ in range(2):
         with TestClient(create_app(tmp_path,factory_id=factory,customer_codes=[code]),base_url=BASE) as client:
