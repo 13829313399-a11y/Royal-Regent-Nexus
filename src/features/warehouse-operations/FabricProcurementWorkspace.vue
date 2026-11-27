@@ -15,6 +15,7 @@ import FabricChaseDialog from './FabricChaseDialog.vue'
 import FabricPurchaseFilters from './FabricPurchaseFilters.vue'
 import FabricPurchaseGroups from './FabricPurchaseGroups.vue'
 import WarehouseDetailDialog from '@/features/warehouse-foundation/WarehouseDetailDialog.vue'
+import FabricPurchaseReadTarget from './FabricPurchaseReadTarget.vue'
 import type { PurchaseFilters, PurchaseMaterialGroup } from '@/api/fabricProcurement'
 import type { FabricReceipt, ReceiveSourcesResult } from '@/api/fabricReceiving'
 import { warehouseRequestId } from './requestIdentity'
@@ -432,6 +433,7 @@ const returnedOrdersTarget = { ...importTarget, query: { ...importTarget.query, 
     <p v-if="busy" class="fabric-message" role="status">{{ mode === 'import' ? '正在读取或保存采购资料…' : '正在查询采购资料…' }}</p>
     <div v-if="linkedDetailError" class="fabric-error">
       <p role="alert">{{ linkedDetailError.missing ? '找不到该厂区的原采购明细，可返回采购列表查找。' : `无法打开原采购明细。${linkedDetailError.message}` }}</p>
+      <FabricPurchaseReadTarget v-if="linkedPurchase" :key="`${auth.currentUser?.id}:${linkedPurchase}`" :id="linkedPurchase" />
       <Button v-if="linkedDetailError.missing" type="button" variant="outline" @click="returnToPurchaseList">返回采购列表</Button>
       <Button v-else ref="linkedRetryButton" type="button" variant="outline" :disabled="busy" @click="retryLinkedDetail">重试原采购明细</Button>
     </div>
