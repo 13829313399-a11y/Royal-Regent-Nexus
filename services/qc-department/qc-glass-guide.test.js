@@ -72,6 +72,24 @@ test('photo balloon inflates seamlessly from toolbar, pulses arrow/circle, fades
   } finally { dom.window.close(); }
 });
 
+test('reopening a portrait photo shows the mobile hint even after marking a photo', () => {
+  const {dom,w,q} = withFakeTimers('<section><div id="tools"></div><img></section>');
+  try {
+    Object.defineProperty(w.document, 'visibilityState', {value:'visible'});
+    Object.defineProperty(q('img'), 'naturalWidth', {value:600});
+    const rect = (top, width, height) => ({top, left:0, right:width, bottom:top+height, width, height});
+    q('section').getBoundingClientRect = () => rect(0,390,844);
+    q('#tools').getBoundingClientRect = () => rect(10,330,52);
+    q('img').getBoundingClientRect = () => rect(78,330,742);
+    w.QcGlassGuide.completePhoto('phone-user');
+    const guide = w.QcGlassGuide.photo(q('#tools'), {actor:'phone-user', mobile:true});
+    assert.ok(guide);
+    assert.equal(q('.qc-guide-photo').classList.contains('qc-guide-no-room'), false);
+    assert.ok(q('.qc-guide-balloon').style.top);
+    guide.destroy();
+  } finally { dom.window.close(); }
+});
+
 test('review guide uses an existing toolbar gap when it would cover the table', () => {
   const {dom, w, q, advance} = withFakeTimers(
     '<div class="qis-review-surface"><div id="qis-review-controls"><div class="qis-review-tabs"></div><div class="qis-review-batch-actions"><button class="wb-open"></button></div></div><div id="reviewTableWrap"></div></div>'

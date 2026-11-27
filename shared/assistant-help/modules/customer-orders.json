@@ -190,7 +190,7 @@
       {
         "path": "backend/app/services/customer_order_huaxing_unified.py",
         "symbol": "def export_rows",
-        "sha256": "53a3746eddeb3b9d5df855dbdadf140dc52d8ed3c59c170028f5f16e0abdb859"
+        "sha256": "54e8689eb4f1d058348c361ebad3c1a7acbc318ad752472d8e0b9d6f1e7cf430"
       },
       {
         "path": "backend/app/services/customer_order_queries.py",
