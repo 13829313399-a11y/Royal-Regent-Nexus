@@ -176,7 +176,12 @@ def test_pairing_does_not_issue_ticket_for_unavailable_lan_entry(monkeypatch,tmp
         assert not (tmp_path/'companies/_mobile/pairings.sqlite3').exists()
 
 
-def test_production_mobile_behind_tls_proxy(monkeypatch, tmp_path):
+@pytest.mark.parametrize(('entry_host', 'app_env', 'mobile_tls'), [
+    ('qc.company.example', 'production', False),
+    ('1.1.1.1', 'production', False),
+    ('1.1.1.1', 'development', True),
+])
+def test_production_mobile_behind_tls_proxy(monkeypatch, tmp_path, entry_host, app_env, mobile_tls):
     import httpx
     import test_molding_sample_api
     monkeypatch.setenv('QC_DOSSIER_EMERGENCY_DISABLED', 'true')
@@ -184,12 +189,13 @@ def test_production_mobile_behind_tls_proxy(monkeypatch, tmp_path):
     monkeypatch.setattr(test_molding_sample_api, 'TEST_TMP_DIR', tmp_path/'main')
     with make_client(monkeypatch) as client:
         mobile=importlib.import_module('app.api.qc_mobile')
-        origin='https://qc.company.example'
+        origin=f'https://{entry_host}'
         # Model TLS termination upstream: the application's connection is HTTP
         # but the browser has the canonical HTTPS Origin and public Host.
-        client.base_url='http://qc.company.example'
+        client.base_url=f'http://{entry_host}'
         login_as(client, 'qc_inspector')
-        monkeypatch.setattr(mobile.settings, 'app_env', 'production')
+        monkeypatch.setattr(mobile.settings, 'app_env', app_env)
+        monkeypatch.setattr(mobile.settings, 'qc_mobile_require_https', mobile_tls)
         monkeypatch.setattr(mobile.settings, 'session_cookie_secure', False)
         monkeypatch.setattr(mobile.settings, 'qc_mobile_public_origin', origin)
         ready=False
@@ -209,7 +215,7 @@ def test_production_mobile_behind_tls_proxy(monkeypatch, tmp_path):
         assert not (tmp_path/'companies/_mobile/pairings.sqlite3').exists()
         ready=True
         assert client.get(health).json()=={'service':'qc-mobile','ready':True}
-        assert client.get(health, headers={'Host':'wrong.company.example','X-Forwarded-Host':'qc.company.example'}).status_code==503
+        assert client.get(health, headers={'Host':'wrong.company.example','X-Forwarded-Host':entry_host}).status_code==503
         assert client.post(pairs, json={'factory':'huaxing'}, headers={'Origin':'https://other.example'}).status_code==403
         assert client.post(exchange, json={'ticket':''}, headers={'Origin':origin,'Sec-Fetch-Site':'cross-site'}).status_code==403
         assert client.post(exchange, json={'ticket':''}, headers={'Origin':origin}).status_code==422
@@ -227,6 +233,7 @@ def test_production_mobile_behind_tls_proxy(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize('origin', [
     '', 'http://qc.company.example', 'https://192.168.10.110',
+    'http://1.1.1.1', 'https://127.0.0.1', 'https://224.0.0.1', 'https://100.64.0.1',
     'https://localhost', 'https://macbook.local', 'https://qc.company.example:5298',
     'https://qc.company.example/api', 'https://qc.company.example#', 'https://qc.company.example:bad',
 ])

@@ -64,7 +64,11 @@ def command(db, user, body, action, entity, apply):
     lock_transaction(db, 'engineering-bom', FACTORY)
     # Consistent with all old master mutations; no reverse cutting lock is taken.
     state = fabric_procurement.lock_factory(db)
-    request_hash = hashlib.sha256(dump([user.id, action, entity, body.model_dump(mode='json')]).encode()).hexdigest()
+    payload = body.model_dump(mode='json')
+    # Omitted conversion preserves the original request identity for old clients.
+    if 'purchase_conversion' in payload and 'purchase_conversion' not in body.model_fields_set:
+        payload.pop('purchase_conversion')
+    request_hash = hashlib.sha256(dump([user.id, action, entity, payload]).encode()).hexdigest()
     old = db.scalar(select(EngineeringEvent).where(EngineeringEvent.factory_id == FACTORY,
                                                    EngineeringEvent.operation_id == body.operation_id))
     if old:
@@ -115,9 +119,18 @@ def save_material(db, user, body):
         require(not duplicate, '编码已存在，请选择现有物料')
         before = fabric_master.record_data(r) if r else {}
         data = json.loads(r.data_json) if r else {}
+        conversion = data.get('engineering', {}).get('purchase_conversion')
+        if 'purchase_conversion' in body.model_fields_set:
+            conversion = (body.purchase_conversion.model_dump(mode='json') | {'base_unit': body.unit}
+                          if body.purchase_conversion else None)
+        elif conversion:
+            require(conversion.get('base_unit') == body.unit,
+                    '基本单位已变化，请重新确认或清除采购换算关系', 422)
         data.update(unit=body.unit, spec=body.specification, color=body.color, old_code=body.old_code,
             category=body.warehouse_category, engineering=dict(group=body.group, department=body.department,
                 attribute=body.attribute, approval='DRAFT'))
+        if conversion:
+            data['engineering']['purchase_conversion'] = conversion
         if not r:
             r = FabricMasterRecord(id=uuid4().hex, factory_id=FACTORY, kind='MATERIAL', code=code, revision=0)
             db.add(r)

@@ -241,6 +241,7 @@ DEFAULT_ROLES = [
     ("sales_customer_supervisor", "车间业务主管", "统筹车间客户报价转换、复核和报客价输出"),
     ("factory_permission_admin", "厂区权限管理员", "在授权厂区内管理普通用户权限"),
     ("department_permission_admin", "部门权限管理员", "在授权部门内管理普通用户权限"),
+    ("qc_record_admin", "QC 数据删除管理员", "覆盖六厂区 QC 验货管理与独立数据删除权限，不延伸至业务订单或其他部门"),
     ("admin", "系统管理员", "系统配置和权限管理"),
 ] + [
     (item.role_id, item.name, item.description)
@@ -401,8 +402,28 @@ ROLE_PERMISSIONS = {
         "molding_sample:notification_read",
         *INTERNAL_QUOTE_DEFAULT_ROLE_PERMISSIONS["molding_supervisor"],
     },
-    "admin": set(APPLICATION_PERMISSIONS),
+    "qc_record_admin": {
+        "qc_inspection:read",
+        "qc_inspection:schedule_write",
+        "qc_inspection:order_write",
+        "qc_inspection:result_write",
+        "qc_inspection:review",
+        "qc_inspection:problem_write",
+        "qc_inspection:report_export",
+        "qc_inspection:customer_manage",
+        "qc_inspection:record_delete",
+        "qc_inspection:audit_read",
+        "qc_inspection:factory_summary",
+    },
+    "admin": set(APPLICATION_PERMISSIONS) - {"qc_inspection:record_delete"},
 }
+
+QC_RECORD_ADMIN_ROLE_ID = "qc_record_admin"
+QC_RECORD_ADMIN_USER_ID = "user-qc-test"
+QC_RECORD_ADMIN_USERNAME = "QC_test"
+QC_RECORD_ADMIN_DISPLAY_NAME = "QC 数据管理员"
+QC_RECORD_DELETE = "qc_inspection:record_delete"
+QC_RECORD_ADMIN_SEED_MARKER = "seed_qc_record_admin_account_v1"
 
 for system_position in SYSTEM_POSITION_DEFINITIONS:
     ROLE_PERMISSIONS[system_position.role_id] = set(system_position.permission_codes)
@@ -1923,7 +1944,127 @@ def ensure_authz_startup_safety(db: Session) -> None:
         )
 
 
+def seed_qc_record_admin_account_once(db: Session, now: str) -> None:
+    """Reconcile structural grants; an existing credential or suspension belongs to IAM."""
+    marker = db.get(AuthIamState, QC_RECORD_ADMIN_SEED_MARKER)
+    affected = set()
+    permissions_by_code = {
+        permission.code: permission
+        for permission in db.scalars(select(AuthPermission)).all()
+    }
+    for link in db.scalars(select(AuthRolePermission).where(
+        AuthRolePermission.role_id == "admin",
+        AuthRolePermission.permission_id == permissions_by_code[QC_RECORD_DELETE].id,
+    )):
+        affected.update(db.scalars(select(AuthUserRole.user_id).where(AuthUserRole.role_id == "admin")))
+        db.delete(link)
+    role_id = QC_RECORD_ADMIN_ROLE_ID
+    for code in ROLE_PERMISSIONS[role_id]:
+        permission_id = permissions_by_code[code].id
+        link_id = f"{role_id}:{permission_id}"
+        if db.get(AuthRolePermission, link_id) is None:
+            db.add(AuthRolePermission(id=link_id, role_id=role_id, permission_id=permission_id))
+            affected.add(QC_RECORD_ADMIN_USER_ID)
+
+    user = db.get(AuthUser, QC_RECORD_ADMIN_USER_ID)
+    named = db.scalar(select(AuthUser).where(AuthUser.username == QC_RECORD_ADMIN_USERNAME))
+    if named is not user or (user and user.username != QC_RECORD_ADMIN_USERNAME):
+        raise RuntimeError("QC_test identity conflict: reconcile in IAM")
+    created_user = False
+    if user is None:
+        secret = settings.qc_record_admin_bootstrap_secret.get_secret_value()
+        if secret and (len(secret) < MIN_SEED_ADMIN_PASSWORD_LENGTH or contains_chinese_characters(secret)):
+            raise RuntimeError("Invalid QC_RECORD_ADMIN_BOOTSTRAP_SECRET")
+        salt, password_hash = make_password_hash(secret or secrets.token_urlsafe(48))
+        user = AuthUser(
+            id=QC_RECORD_ADMIN_USER_ID,
+            username=QC_RECORD_ADMIN_USERNAME,
+            display_name=QC_RECORD_ADMIN_DISPLAY_NAME,
+            password_salt=salt,
+            password_hash=password_hash,
+            status="active" if secret else "suspended",
+            force_password_change=0 if secret else 1,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(user)
+        db.flush()
+        created_user = True
+
+    bound_factories: list[str] = []
+    profile = db.get(EmployeeProfile, user.id)
+    for factory_id in sorted(ALLOWED_FACTORY_IDS):
+        user_role_id = f"{user.id}:{QC_RECORD_ADMIN_ROLE_ID}:{factory_id}:qc"
+        existing = db.scalar(select(AuthUserRole).where(
+            AuthUserRole.user_id == user.id, AuthUserRole.role_id == role_id,
+            AuthUserRole.factory_id == factory_id, AuthUserRole.department == "qc",
+        ))
+        if existing is None:
+            db.add(
+                AuthUserRole(
+                    id=user_role_id,
+                    user_id=user.id,
+                    role_id=QC_RECORD_ADMIN_ROLE_ID,
+                    factory_id=factory_id,
+                    department="qc",
+                )
+            )
+            bound_factories.append(factory_id)
+        if profile and profile.identity_mode == "v2":
+            binding_id = existing.id if existing else user_role_id
+            metadata = db.get(AuthRoleBindingMetadata, binding_id)
+            if metadata is None:
+                db.flush()
+                db.add(AuthRoleBindingMetadata(
+                    user_role_id=binding_id, state="active", source_type="legacy_import",
+                    valid_from=now, valid_until="", reason="QC 专用账号厂区绑定",
+                    employment_epoch=profile.employment_epoch, version=1, created_at=now, updated_at=now,
+                ))
+                affected.add(user.id)
+            elif (binding_id == user_role_id and metadata.source_type == "legacy_import"
+                  and metadata.employment_epoch is None and profile.employment_epoch == 1
+                  and metadata.state == "active" and metadata.version == 1
+                  and not metadata.assignment_id and not metadata.role_version_id):
+                # v1 sidecars did not record an epoch. Never bridge a later rehire.
+                metadata.employment_epoch = 1
+                metadata.updated_at = now
+                affected.add(user.id)
+
+    if bound_factories:
+        affected.add(user.id)
+    for user_id in affected:
+        revision = db.get(AuthUserAuthorizationRevision, user_id)
+        if revision:
+            revision.revision += 1
+            revision.updated_at = now
+    if marker:
+        db.flush()
+        return
+    db.add(
+        AuthIamState(
+            key=QC_RECORD_ADMIN_SEED_MARKER,
+            value_json=json.dumps(
+                {
+                    "completed_at": now,
+                    "user_id": user.id,
+                    "username": user.username,
+                    "created_user": created_user,
+                    "factories": sorted(ALLOWED_FACTORY_IDS),
+                    "bound_factories": bound_factories,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            updated_at=now,
+        )
+    )
+    db.flush()
+
+
 def seed_auth_defaults(db: Session) -> None:
+    if db.get_bind().dialect.name == "postgresql":
+        # Concurrent API starts must observe the previous seed transaction's commit.
+        db.execute(select(func.pg_advisory_xact_lock(0x514349414D)))
     now = now_text()
     created_role_ids: set[str] = set()
     system_position_role_ids = {
@@ -2002,6 +2143,7 @@ def seed_auth_defaults(db: Session) -> None:
                 )
 
     db.flush()
+    seed_qc_record_admin_account_once(db, now)
     seed_iam_sidecars(db, now)
     seed_raw_material_write_default_grant_once(db, now)
     seed_carton_master_default_grants_once(db, now)
@@ -2850,6 +2992,18 @@ def authorization_decision(
     if denied:
         return False, "user_override", tuple(sorted(override.id for override in denied)), "用户单独禁止"
 
+    # This capability is not delegable by a wildcard, override or another role.
+    if permission == QC_RECORD_DELETE:
+        if (user.id == QC_RECORD_ADMIN_USER_ID and user.username == QC_RECORD_ADMIN_USERNAME
+                and factory_id in ALLOWED_FACTORY_IDS and department in {None, "qc"}):
+            for grant in user.grants:
+                if (grant.role_id == QC_RECORD_ADMIN_ROLE_ID and grant.factory_id == factory_id
+                        and grant.department == "qc" and permission in grant.permissions
+                        and (grant.factory_ceiling is None or factory_id in grant.factory_ceiling)
+                        and time_window_is_active(grant.valid_from, grant.valid_until, at)):
+                    return True, "role_binding", (grant.binding_id,), grant.role_name
+        return False, "default", (), "仅限 QC 专用账号的明确厂区授权"
+
     superadmin_grants = [
         grant
         for grant in user.grants
@@ -3343,7 +3497,7 @@ def has_permission_in_scope(
     *,
     at: datetime | None = None,
 ) -> bool:
-    if user.identity and user.identity.get("identity_mode") == "v2":
+    if permission == QC_RECORD_DELETE or (user.identity and user.identity.get("identity_mode") == "v2"):
         return can(user, permission, factory_id, department, at=at)
     canonical_result, canonical_source, _, _ = authorization_decision(
         user,

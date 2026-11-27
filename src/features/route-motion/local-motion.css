@@ -1,0 +1,65 @@
+/* Only surfaces whose owning workspace opted in receive these variants. */
+.rr-detail-glyph {
+  position: fixed;
+  z-index: 24;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  pointer-events: none;
+  opacity: 0;
+}
+.nc-module-icon.rr-detail-target { display: inline-grid; width: 2rem; height: 2rem; vertical-align: middle; margin-inline-end: .45rem; }
+[data-rr-local-button] { translate: none; }
+[data-rr-local-button="expressive"] {
+  transition-property: background-color, color, border-color, box-shadow, scale;
+  transition-duration: 105ms;
+}
+[data-rr-local-button="expressive"]:enabled:active { scale: .985; }
+[data-rr-local-tabs] [data-slot="tabs-indicator"] { transition: none; }
+[data-rr-local-tabs="expressive"][data-rr-engaged] [data-slot="tabs-indicator"] {
+  transition: translate 175ms var(--motion-ease-standard, ease-out), width 175ms var(--motion-ease-standard, ease-out);
+}
+[data-rr-local-tabs="off"] [data-slot="tabs-trigger"], [data-rr-local-button="off"] { transition-duration: 0s; }
+[data-rr-local-tabs="off"] [data-slot="tabs-trigger"]:active { scale: 1; }
+[data-rr-local-panel][data-state], [data-rr-local-backdrop][data-state] { animation: none; }
+[data-rr-local-backdrop] { backdrop-filter: none; }
+[data-rr-local-backdrop="expressive"][data-state="open"] {
+  animation: rr-backdrop-in 150ms cubic-bezier(.2,.7,.3,1) both;
+}
+@keyframes rr-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
+[data-rr-local-panel="expressive"][data-state="open"]::before {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  z-index: 1;
+  inset: 0 12% auto;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--color-teal-600, #198676) 24%, transparent);
+  transform-origin: left;
+  animation: rr-panel-edge 220ms var(--motion-ease-standard, ease-out) both;
+}
+[data-rr-local-panel][data-rr-edge="right"]::before { transform-origin: right; }
+[data-rr-local-panel][data-side="right"]::before, [data-rr-local-panel][data-side="left"]::before {
+  inset: 6% auto 16% 0;
+  width: 2px;
+  height: auto;
+  transform-origin: top;
+  background: linear-gradient(transparent, var(--color-teal-600, #198676) 24%, transparent);
+  animation-name: rr-panel-side;
+}
+[data-rr-local-panel][data-side="left"]::before { left: auto; right: 0; }
+@keyframes rr-panel-edge {
+  0% { transform: scaleX(.09); opacity: .15; }
+  62% { opacity: .78; }
+  100% { transform: scaleX(1); opacity: 0; }
+}
+@keyframes rr-panel-side {
+  0% { transform: scaleY(.09); opacity: .15; }
+  62% { opacity: .78; }
+  100% { transform: scaleY(1); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rr-detail-glyph { display: none; }
+  [data-rr-local-panel]::before, [data-rr-local-backdrop] { animation: none !important; }
+  [data-rr-local-tabs] [data-slot="tabs-indicator"] { transition: none !important; }
+}

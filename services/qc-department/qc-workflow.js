@@ -477,6 +477,9 @@
   async function onPage(page){
     beforePageChange(page);
     if(page==='daily'&&root.QcDailyReport?.enabled())return;
+    // The current report controllers fetch their own approved source in showPage.
+    if((page==='weekly'||page==='monthly')&&root.QcPeriodReports?.[page]?.enabled())return;
+    if(page==='analysis'&&root.__QC_NEXUS&&root.QcApprovedStatistics)return;
     if(page==='review'&&root.QcInspectionSheet){await root.QcInspectionSheet.loadReview();return;}
     if(page==='records'&&root.QcInspectionSheet){await root.QcInspectionSheet.load();return;}
     if(['records','review','analysis','daily','weekly','monthly','yearly','supplier-report'].includes(page)){

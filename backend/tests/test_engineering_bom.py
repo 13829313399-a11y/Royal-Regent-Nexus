@@ -104,6 +104,41 @@ def test_shared_material_identity_department_revision_and_retry(client):
         assert db.scalar(select(func.count()).select_from(EngineeringEvent)) == 3
 
 
+def test_purchase_conversion_versions_legacy_writes_and_receipts(client):
+    conversion = dict(purchase_unit='卷', base_quantity='700', reference='合成物料档案')
+    m = material(client, purchase_conversion=conversion)
+    assert m['data']['engineering']['purchase_conversion'] == conversion | {'base_unit': '码'}
+    change = command(id=m['id'], code=m['code'], group='01-01', name=m['name'], unit='码', department='车缝', expected_version=m['version'])
+    revised = post(client, '/materials', change)
+    assert revised['data']['engineering']['purchase_conversion'] == m['data']['engineering']['purchase_conversion']
+    assert post(client, '/materials', change) == revised
+    # Old clients used this normalized payload before purchase_conversion existed.
+    from app.schemas.engineering_bom import Material
+    import hashlib
+    legacy_payload = Material(**change).model_dump(mode='json', exclude={'purchase_conversion'})
+    with Session(client.engine) as db:
+        event = db.scalar(select(EngineeringEvent).where(EngineeringEvent.operation_id == change['operation_id']))
+        assert event.request_hash == hashlib.sha256(service.dump(['test-user', 'material_write', m['id'], legacy_payload]).encode()).hexdigest()
+    assert client.post(BASE + '/materials', json=change | {'purchase_conversion': None}).status_code == 409
+    next_change = change | {'expected_version': revised['version'], 'operation_id': uuid4().hex, 'unit': '米'}
+    assert client.post(BASE + '/materials', json=next_change).status_code == 422
+    cleared = post(client, '/materials', next_change | {'purchase_conversion': None})
+    assert 'purchase_conversion' not in cleared['data']['engineering']
+    history = client.get(BASE + f"/history/{m['id']}?factory_id=huakang-c").json()['items']
+    assert history[-1]['data']['engineering']['purchase_conversion']['base_quantity'] == '700'
+
+
+@pytest.mark.parametrize('change', [
+    {'base_quantity': '0'}, {'base_quantity': '-1'}, {'base_quantity': 'NaN'},
+    {'base_quantity': '0.0000000000001'}, {'purchase_unit': ' '}, {'reference': ' '},
+    {'purchase_unit': '码', 'base_quantity': '2'},
+])
+def test_invalid_purchase_conversions_rejected(client, change):
+    body = command(code='01-01-00001', group='01-01', name='合成物料', unit='码', department='工程',
+                   purchase_conversion=dict(purchase_unit='卷', base_quantity='700', reference='合成档案') | change)
+    assert client.post(BASE + '/materials', json=body).status_code == 422
+
+
 def test_bom_self_approval_effective_version_copy_and_immutable_history(client):
     m = material(client); payload = bom(m)
     draft = post(client, '/boms', payload)

@@ -94,6 +94,16 @@ describe('navigation ownership', () => {
     expect(nav.entry.value).toBeNull()
     nav.dispose()
   })
+  it('drops V2 geometry when a guard rewrites the requested query inside the same workspace', async () => {
+    const { router, nav, commits } = await setup()
+    router.beforeEach(to => to.path === '/full/a' && !to.query.policy ? '/full/a?policy=selected' : true)
+    nav.recordIntent({ ...origin(router, '/full/a'), resolvedPath: '/full/a' })
+    await router.push('/full/a')
+    expect(router.currentRoute.value.fullPath).toBe('/full/a?policy=selected')
+    expect(commits.at(-1)?.silentRedirect).toBe(true)
+    expect(commits.at(-1)?.origin).toBeNull()
+    nav.dispose()
+  })
   it('retains presentation for a canonical redirect, but does not replay duplicates/query', async () => {
     const { router, nav, commits } = await setup()
     nav.recordIntent(origin(router, '/alias')); await router.push('/alias')

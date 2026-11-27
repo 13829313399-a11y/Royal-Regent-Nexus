@@ -11,6 +11,7 @@ function page(){
   const perms=Object.fromEntries(['daily','weekly','monthly','analysis'].map(page=>[page,{v:1}]));
   w.__QC_NEXUS={factory:'huaxing',exportAllowed:true,user:{username:'test-admin',perms}};
   w.eval(fs.readFileSync(path.join(__dirname,'app.js'),'utf8'));
+  w.eval(fs.readFileSync(path.join(__dirname,'qc-export-columns.js'),'utf8'));
   w.eval(fs.readFileSync(path.join(__dirname,'qc-approved-statistics.js'),'utf8'));
   d.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));d.getElementById('page-analysis').classList.add('active');w.eval("currentPage='analysis'");
   const data={factory:'huaxing',source:'current-inline-approved-summary-v1',ready:true,

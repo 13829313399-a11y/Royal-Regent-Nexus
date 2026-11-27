@@ -125,6 +125,7 @@
     view.innerHTML='<div class="qwt-heading"><h2>'+esc(spec.title)+'</h2></div><div class="qwt-controls"><button id="qwtRefresh" type="button" class="qc-refresh-icon" aria-label="刷新数据" title="刷新数据"></button></div><div class="qwt-status-line"><span id="qwtStatus" role="status" aria-live="polite"></span><button id="qwtRetry" hidden>重试保存</button></div><div id="qwtConflict"></div><div id="qwtTables"></div><div class="report-export-footer"><div id="qwtExcelStatus" class="qwt-muted" role="status" aria-live="polite"></div><button id="qwtExcel">导出 Excel</button></div>';
     el('qwtRefresh').onclick=()=>load();
     el('qwtExcel').onclick=exportExcel;
+    root.QcExportColumns.mount(el('qwtExcel'),active);
     el('qwtRetry').onclick=retry;
     if(dirty()||!root.QcReportWorkbook?.mount('weekly',active,el('qwtTables'),data,()=>load()))renderTables();
     status();
@@ -230,8 +231,11 @@
     view.innerHTML='<p class="qwt-message" role="status">正在读取已审核验货记录…</p>';
     try{
       // Read all customer supplements to recover drafts even when a filter was previously selected.
-      contactOptions=(await request('api/inspection-sheet/options')).hongKongContacts||[];
-      const fresh=await request('api/weekly-templates?date='+encodeURIComponent(date));if(token!==sequence)return;
+      const [options,fresh]=await Promise.all([
+        request('api/inspection-sheet/options'),request('api/weekly-templates?date='+encodeURIComponent(date))
+      ]);
+      if(token!==sequence)return;
+      contactOptions=options.hongKongContacts||[];
       syncCustomers(fresh.customers);
       data=normalizeFields(fresh);
       exportMessage='';
@@ -259,10 +263,11 @@
     const versions=Object.fromEntries(Object.entries(data.fields).filter(([key])=>!customer||key===customer).map(([key,cells])=>[key,Object.fromEntries(Object.entries(cells).map(([field,cell])=>[field,cell.version]))]));
     exporting=true;exportMessage='正在准备完整表格，请稍候…';status();
     try{
-      const result=await request('api/weekly-templates/excel',{date:data.date,customer,template:active,sourceRevision:data.sourceRevision,versions},120000);
+      const on=root.QcExportColumns.enabled(active);
+      const result=await request('api/weekly-templates/excel',{date:data.date,customer,template:active,sourceRevision:data.sourceRevision,versions,hideEmptyCols:on},120000);
       if(!/^api\/weekly-templates\/excel\/[a-zA-Z0-9.-]+$/.test(result.url))throw Error('下载地址无效，请重试');
-      const link=doc.createElement('a');link.href=result.url;link.download=result.filename;link.hidden=true;doc.body.append(link);link.click();link.remove();
-      exportMessage='已生成 '+result.filename+'，已发起下载。';
+      await root.QcExportColumns.downloadTicket(result);
+      exportMessage=root.QcExportColumns.message(on,result.hiddenColumns);
     }catch(e){exportMessage='Excel 导出失败：'+(e.message||'请重试');}
     finally{exporting=false;status();}
   }

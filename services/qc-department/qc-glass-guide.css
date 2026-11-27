@@ -1,0 +1,246 @@
+/* Non-interactive QC hints are positioned outside the document flow. */
+#page-review .qis-review-surface { position: relative; }
+.photo-markup-sheet > #sheet-content { position: relative; }
+
+.qc-glass-guide {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  overflow: visible;
+  z-index: 15;
+  pointer-events: none;
+  user-select: none;
+}
+.qc-glass-guide.qc-guide-photo {
+  z-index: 25;
+}
+.qc-glass-guide.qc-guide-await,
+.qc-glass-guide.qc-guide-no-room {
+  visibility: hidden;
+}
+.qc-glass-guide.qc-guide-await * {
+  animation: none !important;
+}
+
+.qc-guide-balloon {
+  position: absolute;
+  box-sizing: border-box;
+  pointer-events: none;
+  transform-origin: var(--qc-origin, 50% 0%);
+}
+
+.qc-balloon-shadow,
+.qc-balloon-glass,
+.qc-balloon-rim {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* Exterior-only soft Apple shadow on a sibling SVG behind the glass (never darkens interior or breaks backdrop-filter) */
+.qc-balloon-shadow {
+  z-index: 0;
+  overflow: visible;
+}
+.qc-balloon-shadow path {
+  fill: #18273e;
+}
+
+/* One continuous frosted pearl-glass sheet clipped to the unified balloon + curved neck path */
+.qc-balloon-glass {
+  z-index: 1;
+  background:
+    radial-gradient(115% 88% at 24% 12%, rgba(255, 255, 255, 0.96) 0%, rgba(255, 255, 255, 0) 58%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88) 0%, rgba(242, 247, 253, 0.80) 100%);
+  -webkit-backdrop-filter: blur(26px) saturate(190%);
+  backdrop-filter: blur(26px) saturate(190%);
+}
+
+/* Seamless glass outline & top specular rim tracing the exact balloon + curved neck contour */
+.qc-balloon-rim {
+  z-index: 2;
+  overflow: visible;
+}
+.qc-balloon-rim .qc-rim-outer {
+  fill: none;
+  stroke: rgba(24, 39, 62, 0.13);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.qc-balloon-rim .qc-rim-spec {
+  fill: none;
+  stroke-width: 1.4;
+  vector-effect: non-scaling-stroke;
+}
+
+body.theme-dark .qc-balloon-shadow path {
+  fill: #000000;
+}
+body.theme-dark .qc-balloon-glass {
+  background:
+    radial-gradient(115% 88% at 24% 12%, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0) 58%),
+    linear-gradient(180deg, rgba(54, 62, 74, 0.86) 0%, rgba(36, 42, 52, 0.78) 100%);
+}
+body.theme-dark .qc-balloon-rim .qc-rim-outer {
+  stroke: rgba(255, 255, 255, 0.22);
+}
+
+.qc-guide-copy {
+  position: relative;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 42px;
+  padding: 0 18px;
+  box-sizing: border-box;
+  color: #182a3e;
+  font: 550 14px/1 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+.qc-guide-balloon.is-top-neck .qc-guide-copy {
+  margin-top: 10px;
+}
+.qc-guide-balloon.is-left-neck .qc-guide-copy {
+  margin-left: 10px;
+}
+.qc-guide-balloon.is-right-neck :is(.qc-balloon-shadow,.qc-balloon-glass,.qc-balloon-rim) {
+  scale:-1 1;
+}
+
+body.theme-dark .qc-guide-copy {
+  color: rgba(246, 249, 253, 0.95);
+}
+
+.qc-guide-copy b {
+  font-size: 14.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.qc-guide-sep {
+  opacity: 0.42;
+}
+.qc-guide-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: #d97706;
+  box-shadow: 0 0 0 2.5px rgba(217, 119, 6, 0.14);
+}
+.qc-guide-dot.is-photo {
+  background: #007aff;
+  box-shadow: 0 0 0 2.5px rgba(0, 122, 255, 0.16);
+}
+.qc-guide-dot.is-read {
+  background: #1e874b;
+  box-shadow: 0 0 0 2.5px rgba(30, 135, 75, 0.14);
+}
+
+body.theme-dark .qc-guide-dot { background: #ffc966; box-shadow: 0 0 6px rgba(255, 201, 102, 0.45); }
+body.theme-dark .qc-guide-dot.is-photo { background: #4da3ff; box-shadow: 0 0 6px rgba(77, 163, 255, 0.5); }
+body.theme-dark .qc-guide-dot.is-read { background: #82e0aa; box-shadow: none; }
+
+/* Origin button tether pulse: visually signals the button is inflating this balloon */
+.qc-guide-origin-pulse {
+  animation: qcGuideOriginPulse 1350ms cubic-bezier(0.22, 1, 0.36, 1) 1;
+}
+@keyframes qcGuideOriginPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(0, 122, 255, 0.44), inset 0 0 0 1px rgba(0, 122, 255, 0.35);
+  }
+  42% {
+    box-shadow: 0 0 0 6px rgba(0, 122, 255, 0.14), inset 0 0 0 1px rgba(0, 122, 255, 0.24);
+  }
+  100% {
+    box-shadow: 0 0 0 12px rgba(0, 122, 255, 0), inset 0 0 0 1px rgba(0, 122, 255, 0);
+  }
+}
+
+/* Balloon inflation straight out of the neck tip */
+.qc-guide-enter .qc-guide-balloon {
+  animation: qcGuideBalloonInflate 460ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Silky 950ms mist-like buoyant fade-out */
+.qc-guide-out .qc-guide-balloon {
+  animation: qcGuideBalloonFade 950ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+@keyframes qcGuideBalloonInflate {
+  0% {
+    opacity: 0;
+    transform: scale(0.16);
+  }
+  62% {
+    opacity: 1;
+    transform: scale(1.032);
+  }
+  84% {
+    opacity: 1;
+    transform: scale(0.994);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes qcGuideBalloonFade {
+  0% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  35% {
+    opacity: 0.72;
+    transform: translate3d(0, -1.5px, 0) scale(0.992);
+  }
+  70% {
+    opacity: 0.24;
+    transform: translate3d(0, -4px, 0) scale(0.982);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(0, -7px, 0) scale(0.972);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qc-guide-origin-pulse { animation: none; }
+  .qc-guide-enter .qc-guide-balloon { animation: qcGuideFadeIn 180ms ease-out both; }
+  .qc-guide-out .qc-guide-balloon { animation: qcGuideFadeOut 360ms ease-out both; }
+}
+@keyframes qcGuideFadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes qcGuideFadeOut { from { opacity: 1; } to { opacity: 0; } }
+
+#page-review .qis-open-review-book .wb-open { position: relative; overflow: visible; }
+.qc-guide-badge {
+  position: absolute; top: -2px; right: -2px; display: grid; place-items: center;
+  min-width: 16px; height: 16px; box-sizing: border-box; padding: 0 2px;
+  border: 1.5px solid white; border-radius: 999px; background: #007aff; color: white;
+  font-size: 9px; font-weight: 700; line-height: 1; pointer-events: none;
+}
+.qc-guide-badge[hidden] { display: none; }
+.qc-guide-unread {
+  display: inline-block; width: 6px; height: 6px; margin-right: 5px;
+  vertical-align: 2px; border-radius: 50%; background: #007aff;
+}
+.qia-dialog .qc-guide-warning {
+  margin: 8px 0; padding: 7px 9px; border: 1px solid #dce6ee; border-radius: 6px;
+  background: #f4f7fa; color: #40586a; font-size: 13px;
+}
+
+@media (max-width: 560px) {
+  .qc-guide-copy {
+    height: 40px;
+    padding: 0 15px;
+    font-size: 13.5px;
+  }
+  .qc-guide-review .qc-guide-review-extra { display: none; }
+}

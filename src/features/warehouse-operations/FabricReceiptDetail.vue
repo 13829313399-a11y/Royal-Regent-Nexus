@@ -8,7 +8,7 @@ import { fabricReceivingApi, materialCategoryLabels, type FabricReceipt, type Ha
 import { getApiErrorMessage } from '@/lib/http'
 import { quantityText, receiptQuantity } from './receiptQuantities'
 import { purchasePriceText } from './purchasePrice'
-import FabricDetailDialog from './FabricDetailDialog.vue'
+import WarehouseDetailDialog from '@/features/warehouse-foundation/WarehouseDetailDialog.vue'
 
 const props = defineProps<{ record: FabricReceipt }>()
 const emit = defineEmits<{ close: [] }>()
@@ -88,7 +88,7 @@ function displayedQuantity(value?: string | null) {
 </script>
 
 <template>
-  <FabricDetailDialog title="入库单详情" :description="`${record.subcontract_order_id ? '委外回仓' : isHandover ? '送货单 / 扫码入库' : '手动入库'} · 收货日期 ${record.receipt_date}`"
+  <WarehouseDetailDialog title="入库单详情" :description="`${record.subcontract_order_id ? '委外回仓' : isHandover ? '送货单 / 扫码入库' : '手动入库'} · 收货日期 ${record.receipt_date}`"
     :icon="ClipboardList" close-label="关闭入库详情" wide @close="emit('close')">
     <template #status>
       <span class="fabric-detail-badge" :data-tone="status.tone">
@@ -301,7 +301,7 @@ function displayedQuantity(value?: string | null) {
         </RouterLink>
       </Button>
     </template>
-  </FabricDetailDialog>
+  </WarehouseDetailDialog>
 </template>
 
 <style scoped>

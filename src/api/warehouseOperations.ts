@@ -2,7 +2,7 @@ import { http } from '@/lib/http'
 import type { PurchasePriceReference } from './fabricProcurement'
 
 export type WarehouseDomain = 'fabric' | 'semi'
-export type WarehouseOperationKind = 'RECEIPT' | 'REQUEST' | 'ISSUE' | 'RETURN' | 'TRANSFER' | 'QUALITY' | 'CORRECTION' | 'TASK' | 'PROCESS_SEND' | 'PROCESS_RETURN' | 'PACK_SEND' | 'PACK_RECEIVE' | 'LOCATION_BIND' | 'REQUEST_CLOSE' | 'CUTTING_RECEIPT' | 'CUTTING_RECEIPT_VOID' | 'CUTTING_REQUEST_REUSE' | 'OPENING' | 'STOCKTAKE'
+export type WarehouseOperationKind = 'RECEIPT' | 'REQUEST' | 'ISSUE' | 'RETURN' | 'TRANSFER' | 'QUALITY' | 'CORRECTION' | 'SEMI_RELEASE' | 'TASK' | 'PROCESS_SEND' | 'PROCESS_RETURN' | 'PACK_SEND' | 'PACK_RECEIVE' | 'LOCATION_BIND' | 'REQUEST_CLOSE' | 'CUTTING_RECEIPT' | 'CUTTING_RECEIPT_VOID' | 'CUTTING_REQUEST_REUSE' | 'OPENING' | 'STOCKTAKE'
 export type WarehouseQuality = 'PENDING_INSPECTION' | 'QUALIFIED' | 'REJECTED' | 'HOLD'
 export interface WarehouseDocumentInput {
   issue_group?: FabricIssueGroup
@@ -12,6 +12,7 @@ export interface WarehouseDocumentInput {
   location_id?: string; confirmed?: boolean
   location: string; lot: string; roll_no: string; quantity: string; consumed_quantity: string; counterparty: string
   production_no: string; purpose: string; due_date: string | null; batch_id: string; original_id: string; task_id: string
+  release_id?: string; part?: string; label_code?: string; consumed_unit?: string
   quality_status: WarehouseQuality; responsible_person: string; reason: string
   allocations: { production_no: string; quantity: string }[]
   cutting_request?: { line_id: string; order_no: string; task_name: string; resource_name: string; bom_version: number; plan_version: number; mapping_basis: string; warehouse_material: {code:string; name:string; revision:number; spec:string; color:string; unit:string; category:string}; cutting_material: {code: string; name: string; specification: string; color: string} }
@@ -20,6 +21,7 @@ export interface WarehouseDocumentInput {
 export interface WarehouseLocation { category?: string; id: string; warehouse: string; code: string; label: string; status: string; revision: number }
 export interface WarehouseBulkIssue { factory_id: 'huakang-c'; request_id: string; expected_revision: number; business_date: string; counterparty: string; reason: string; items: { batch_id: string; quantity: string; counterparty: string }[] }
 export interface WarehouseBatch {
+  release_id?: string
   style_no?: string; customer_name?: string; material_detail?: string
   location_id?: string; location_verified?: boolean; location_status?: string; location_label?: string; warehouse_name?: string
   inbound_quantity?: string; outbound_quantity?: string; transfer_quantity?: string; opening_quantity?: string; adjustment_quantity?: string
@@ -36,8 +38,18 @@ export interface WarehouseDocument {
   cutting_return_limit?: CuttingReturnLimit
 }
 export interface CuttingReturnLimit { day: string; quantity: string; reason: string }
+export interface SemiProgressItem {
+  item_code: string; item_name: string; process_state: string; unit: string
+}
+export interface SemiProgressQuantity extends SemiProgressItem { quantity: string }
+export interface SemiPackagingProgress extends SemiProgressItem { sent: string; received: string; returned: string; pending: string }
+export interface SemiOrderProgress {
+  release_id: string; received: string; pending_receipt: string; extra_received: string
+  stock: SemiProgressQuantity[]; processing: SemiProgressQuantity[]; packaging: SemiPackagingProgress[]; document_ids: string[]
+}
 export interface WarehouseOperationsWorkspace {
   issue_groups?: FabricIssueGroup[]
+  order_progress?: SemiOrderProgress[]
   revision: number; stock: WarehouseBatch[]; documents: WarehouseDocument[]
   original_receipts?: WarehouseDocument[]
   locations?: WarehouseLocation[]
@@ -105,8 +117,10 @@ export const warehouseOperationsApi = {
   async exportMonthly(query: FabricMonthlyQuery, version: string) { return (await http.get<Blob>('/warehouse-operations/fabric/monthly/export', { params: { factory_id: 'huakang-c', ...query, version }, responseType: 'blob' })).data },
   async saveLocation(input: { factory_id: 'huakang-c'; request_id: string; id: string; expected_revision: number; warehouse: string; code: string; status: 'ACTIVE' | 'INACTIVE' }) { return (await http.post<WarehouseLocation>('/warehouse-operations/semi/locations', input)).data },
   async bulkIssue(warehouse: WarehouseDomain, input: WarehouseBulkIssue) { return (await http.post(`/warehouse-operations/${warehouse}/issues/bulk`, input)).data },
-  async workspace(warehouse: WarehouseDomain, includeCuttingReturns = false) {
-    return (await http.get<WarehouseOperationsWorkspace>(`/warehouse-operations/${warehouse}`, { params: { factory_id: 'huakang-c', include_cutting_returns: includeCuttingReturns || undefined } })).data
+  async workspace(warehouse: WarehouseDomain, includeCuttingReturns = false, includeOrderProgress = false) {
+    return (await http.get<WarehouseOperationsWorkspace>(`/warehouse-operations/${warehouse}`, { params: {
+      factory_id: 'huakang-c', include_cutting_returns: includeCuttingReturns || undefined, include_order_progress: includeOrderProgress || undefined,
+    } })).data
   },
   async cuttingReturnLimit(issueId: string, day: string) {
     return (await http.get<CuttingReturnLimit>('/warehouse-operations/fabric/return-limit', { params: { factory_id: 'huakang-c', issue_id: issueId, day } })).data

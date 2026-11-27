@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, shallowRef, ref, useId, watch } from 'vue'
-import { RouterLink, useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
-import { ArrowUpRight, ClipboardList, Info, FileText } from '@lucide/vue'
+import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
+import { ClipboardList, Info, FileText } from '@lucide/vue'
 import StatusPill from '@/components/common/StatusPill.vue'
 import { Button } from '@/components/ui/button'
 import DateRangeFilter from '@/components/DateRangeFilter.vue'
@@ -9,6 +9,7 @@ import CartonSelectionSummary from '@/components/CartonSelectionSummary.vue'
 import type { DateRange } from 'reka-ui'
 import FabricProcurementWorkspace from './FabricProcurementWorkspace.vue'
 import FabricDashboard from './FabricDashboard.vue'
+import SemiDashboard from './SemiDashboard.vue'
 import FabricReceivingRecords from './FabricReceivingRecords.vue'
 import FabricMasterWorkspace from './FabricMasterWorkspace.vue'
 import SemiLocationWorkspace from './SemiLocationWorkspace.vue'
@@ -22,7 +23,7 @@ import WarehouseOperationsWorkspace from './WarehouseOperationsWorkspace.vue'
 import { operationsView } from './operations'
 import WarehouseDocumentPreview from '@/features/warehouse-foundation/WarehouseDocumentPreview.vue'
 import { warehouseDocumentSpec, type WarehousePreviewKind } from './documentPreviews'
-import { FABRIC_RECORD_KIND_BY_VIEW, WAREHOUSE_FACTORY, warehousePath, type WarehouseWorkspace, type WarehouseSection, type WarehouseView } from './navigation'
+import { FABRIC_RECORD_KIND_BY_VIEW, warehousePath, type WarehouseWorkspace, type WarehouseSection, type WarehouseView } from './navigation'
 
 const props = defineProps<{ warehouse: WarehouseWorkspace; section: WarehouseSection; rememberedView?: string }>()
 const emit = defineEmits<{ viewChange: [path: string, view: string] }>()
@@ -40,7 +41,11 @@ const currentView = computed(() => {
 watch(() => currentView.value.id, id => emit('viewChange', warehousePath(props.warehouse, props.section.path), id), { immediate: true })
 function selectView(view: WarehouseView) {
   if (currentView.value.id === view.id && !route.query.source && !route.query.receipt && !route.query.purchase_id) return
-  return router.push({ path: route.path, query: { ...route.query, view: view.id, source: undefined, receipt: undefined, purchase_id: undefined, subcontract_id: undefined, ...(fabricInventory.value ? { kind: undefined, record: undefined } : {}) } })
+  return router.push({ path: route.path, query: { ...route.query, view: view.id,
+    source: undefined, receipt: undefined, purchase_id: undefined, subcontract_id: undefined,
+    ...(fabricInventory.value ? { kind: undefined, record: undefined } : {}),
+    ...(semi.value ? { record: undefined, release: undefined, receipt_progress: undefined, followup: undefined } : {}),
+  } })
 }
 async function selectMobileView(event: Event) {
   const select = event.target as HTMLSelectElement
@@ -136,6 +141,9 @@ const dateLabel = computed(() => {
     <FabricDashboard v-if="!semi && section.path === 'overview'">
       <details class="fabric-receiving-help"><summary><FileText :size="17" />查看单据字段样式</summary><div class="fabric-receiving-help-content"><p>样式预览只用于查看字段。</p><Button v-for="action in previewActions" :key="action.kind" variant="outline" size="sm" @click="previewKind = action.kind">{{ action.label }}</Button></div></details>
     </FabricDashboard>
+    <SemiDashboard v-else-if="section.path === 'overview'">
+      <details class="fabric-receiving-help"><summary><FileText :size="17" />查看单据字段样式</summary><div class="fabric-receiving-help-content"><Button v-for="action in previewActions" :key="action.kind" variant="outline" size="sm" @click="previewKind = action.kind">{{ action.label }}</Button></div></details>
+    </SemiDashboard>
     <template v-else>
     <h1 v-if="fabricReceipts || masterMode || inventoryPage || fabricExceptions || fabricActivity || fabricClosing" class="sr-only">{{ section.title }}</h1>
     <header v-else class="warehouse-heading">
@@ -145,18 +153,6 @@ const dateLabel = computed(() => {
     <div v-if="!fabricClosing && !fabricReceipts && !masterMode && !semiLocations && !liveOperations && !monthlyView && !['subcontract', 'order-summary', 'opening', 'stocktake'].includes(currentView.id)" class="warehouse-notice" role="note"><Info :size="18" aria-hidden="true" /><p>{{ semi ? '加工任务、实收、加工发回和包装交接可在对应栏目登记。当前栏目尚待建设。' : '采购实收、出库、退料和调仓分别留痕。数量汇总、期初库存与盘点已开放；计价和正式月结确认尚待建设。' }}</p></div>
 
     <details v-if="previewActions.length && !fabricReceipts && !inventoryPage" class="fabric-receiving-help"><summary><FileText :size="17" />查看单据字段样式</summary><div class="fabric-receiving-help-content"><p>样式预览只用于查看字段；实际登记请使用下方业务操作。</p><Button v-for="action in previewActions" :key="action.kind" variant="outline" size="sm" @click="previewKind = action.kind">{{ action.label }}</Button></div></details>
-
-    <template v-if="section.path === 'overview'">
-      <section class="warehouse-panel warehouse-pending" aria-label="仓库待办入口">
-        <div class="warehouse-pending-heading"><div><h2>仓库待办 · 先看这里</h2><p>按事项进入对应业务分区；待办数据接通后展示实际记录。</p></div><StatusPill label="待办待接入" tone="amber" /></div>
-        <div class="warehouse-shortcuts">
-          <RouterLink v-for="item in warehouse.pending" :key="item.title" :to="{ path: warehousePath(warehouse, item.section), query: { factory: WAREHOUSE_FACTORY, view: item.view } }">
-            <div><h3>{{ item.title }}</h3><ArrowUpRight :size="18" aria-hidden="true" /></div><p>{{ item.description }}</p><span>{{ !semi && item.section === 'receipts' ? '查看采购来源' : '查看工作区' }}</span>
-          </RouterLink>
-        </div>
-      </section>
-      <section class="warehouse-panel warehouse-flow" aria-label="仓库业务流程"><h2>收发业务链</h2><ol><li v-for="(step, index) in warehouse.flow" :key="step"><span>{{ String(index + 1).padStart(2, '0') }}</span><strong>{{ step }}</strong></li></ol></section>
-    </template>
 
     <section class="warehouse-panel" :class="{ 'fabric-receipts-panel': fabricReceipts, 'fabric-master-panel': masterMode }" :aria-label="section.title">
       <div :class="{ 'fabric-receipts-navigation': fabricReceipts || masterMode || fabricInventory || fabricExceptions || fabricClosing, 'fabric-inventory-navigation': fabricInventory || fabricExceptions || fabricClosing }">

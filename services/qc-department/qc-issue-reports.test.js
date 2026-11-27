@@ -4,14 +4,17 @@ function page(){
  const dom=new JSDOM('<button id="trigger">图文报表</button><section id="page-weekly"><div class="page-inner"><div id="weekly-main">周报</div></div></section><section id="page-analysis"><div class="page-inner"><div id="year-main">年报</div></div></section>',{url:'http://localhost/api/qc-department/huaxing/u-qa/',runScripts:'outside-only'}),w=dom.window,d=w.document,calls=[];
  w.__QC_NEXUS={factory:'huaxing'};w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;setTimeout(()=>this.dispatchEvent(new w.Event('close')),0);};w.HTMLAnchorElement.prototype.click=function(){calls.push({download:this.download,url:this.href});};
  w.fetch=async(url,init)=>{calls.push({url,init});if(init.method==='POST')return{ok:true,json:async()=>({url:'api/monthly-templates/excel/token.xlsx',filename:'验收.xlsx',fallbackCount:0})};const customer=new URL(url,w.location).searchParams.get('customer');return{ok:true,json:async()=>({title:'验货问题图文记录表',dateFrom:'2026-11-08',dateTo:'2026-11-14',sourceRevision:'r1',canExport:true,customers:[{key:'stable-a',label:'同名 · A'},{key:'stable-b',label:'同名 · B'}],total:1,groups:[[5,'订单与产品'],[5,'合同与装箱'],[4,'验货问题与照片'],[5,'整改跟踪']],widths:Array(19).fill(100),headers:Array(19).fill('字段'),tables:{issues:[{id:customer||'all',values:Array(19).fill(''),photos:[]}]}})};};
- w.eval(fs.readFileSync(path.join(__dirname,'qc-issue-reports.js'),'utf8'));return{dom,w,d,calls};
+ const original=w.fetch;
+ w.fetch=(url,init)=>url.endsWith('/excel/token.xlsx')?require('./fixtures/export-attachment.cjs')(w,'xlsx'):original(url,init);
+ w.eval(fs.readFileSync(path.join(__dirname,'qc-export-columns.js'),'utf8'));
+  w.eval(fs.readFileSync(path.join(__dirname,'qc-issue-reports.js'),'utf8'));return{dom,w,d,calls};
 }
 test('inline workbook exports the selected stable customer as preview without quality options',async()=>{const p=page();try{
  const host=p.d.createElement('section');p.d.querySelector('#weekly-main').append(host);
  await p.w.QcIssueReports.open('weekly','2026-11-09','',{host});const el=p.d.querySelector('.qir-inline'),q=s=>el.querySelector(s);
  assert.equal(p.d.querySelector('#weekly-main').hidden,false);assert.equal(q('[data-quality]'),null);assert.equal(q('[data-close]'),null);assert.equal(p.d.querySelector('dialog'),null);
  q('[data-customer]').value='stable-b';q('[data-customer]').dispatchEvent(new p.w.Event('change'));await tick();assert.match(p.calls.at(-1).url,/customer=stable-b/);
- q('[data-export]').click();await tick();const post=p.calls.find(x=>x.init?.method==='POST'),body=JSON.parse(post.init.body);assert.deepEqual(body,{period:'weekly',date:'2026-11-09',customer:'stable-b',sourceRevision:'r1',photoQuality:'preview',allowPreviewFallback:false});
+ q('[data-export]').click();await tick();const post=p.calls.find(x=>x.init?.method==='POST'),body=JSON.parse(post.init.body);assert.deepEqual(body,{hideEmptyCols:true,period:'weekly',date:'2026-11-09',customer:'stable-b',sourceRevision:'r1',photoQuality:'preview',allowPreviewFallback:false});
  assert.equal(p.d.querySelectorAll('dialog').length,0);assert.ok(p.calls.some(x=>x.download==='验收.xlsx'));
  }finally{p.dom.window.close();}});
 test('returning from page reports restores parents and cancels only its own request',async()=>{const p=page();try{

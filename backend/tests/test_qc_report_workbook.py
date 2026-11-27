@@ -15,6 +15,56 @@ from test_qc_approved_statistics import approval, transition, hashes
 from test_qc_monthly_templates import issue, db, engine, isolated, ACTOR, DAY
 
 
+def test_preview_wire_encoding_preserves_workbook_and_cache_headers():
+    import gzip
+    import json
+    payload = {'sheets': [{'html': '<td>验货问题</td>' * 500}], 'cells': {'0:A1': {'version': 2}}}
+    for accepted, compressed in [('br, gzip', True), ('gzip;q=0.2', True), ('gzip;q=0', False), ('', False)]:
+        response = workbooks.preview_response(payload, accepted, {'Cache-Control':'no-store'})
+        assert ('content-encoding' in response.headers) == compressed
+        assert response.headers['vary'] == 'Accept-Encoding' and response.headers['cache-control'] == 'no-store'
+        assert int(response.headers['content-length']) == len(response.body)
+        assert json.loads(gzip.decompress(response.body) if compressed else response.body) == payload
+
+
+def test_idle_visit_starts_one_engine_and_does_not_block_summary(monkeypatch):
+    from threading import Event, Lock
+    started, release = Event(), Event()
+    calls = []
+    def start(exe):
+        calls.append(exe)
+        started.set()
+        assert release.wait(3)
+    lock = Lock()
+    monkeypatch.setattr(workbooks, '_render_lock', lock)
+    monkeypatch.setattr(workbooks, '_warm_attempted', False)
+    monkeypatch.setattr(workbooks, 'office_executable', lambda:'calc')
+    monkeypatch.setattr(workbooks, 'start_worker', start)
+    try:
+        workbooks.warm_on_report_visit()
+        assert started.wait(2)
+        workbooks.warm_on_report_visit()
+    finally:
+        release.set()
+    assert lock.acquire(timeout=2)
+    lock.release()
+    assert calls == ['calc']
+
+
+def test_hot_preview_does_not_queue_behind_an_unrelated_conversion(db):
+    from concurrent.futures import ThreadPoolExecutor
+    issue(db, 1)
+    first = workbooks.preview('huaxing', 'quality', DAY, '', True)
+    assert first['sheets'] and first['cells']
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        # A separate template is using Calc. A viewer can read the finished
+        # preview immediately, with the current request's read-only cell map.
+        with workbooks._render_lock:
+            future = pool.submit(workbooks.preview, 'huaxing', 'quality', DAY, '', False)
+            result = future.result(timeout=2)
+        assert result['sheets'] == first['sheets'] and not result['cells']
+
+
 def test_visible_catalog_and_versioned_edit(db):
     issue(db, 1)
     assert workbooks.KINDS == {'daily','detail','issues','orders','tracking','quality','annual-stats','annual-issues'}
@@ -52,8 +102,11 @@ def test_native_preview_and_readonly_cache(db):
             table = html.fromstring(sheet['html'])
             shown.update(f'{i}:{addr}' for addr in table.xpath('.//td/@data-addr'))
             assert not table.xpath('.//script|.//a|.//*[@onclick]')
-            if kind in ('tracking','issues','quality','annual-issues','annual-stats') and i == 0:
+            if kind in ('quality','annual-stats') and i == 0:
                 assert table.xpath('.//img[starts-with(@src,"data:image/")]')
+            if kind in ('tracking','issues','annual-issues'):
+                assert table.xpath('.//td[@data-addr="M7"]//img[@loading="lazy"][starts-with(@src,"api/report-workbook/photo?")]')
+                assert 'data:image/' not in sheet['html']
         assert set(book['cells']) <= shown
         assert not workbooks.preview('huaxing', kind, '2026-11-03', '', False)['cells']
 
@@ -77,13 +130,52 @@ def test_engine_missing_and_timeout_use_same_editable_grid(db, monkeypatch):
             table=html.fromstring(sheet['html'])
             shown.update(f'{i}:{c}' for c in table.xpath('.//td/@data-addr'))
             if kind in ('tracking','issues','annual-issues'):
-                assert table.xpath('.//img[starts-with(@src,"data:image/")]')
+                assert table.xpath('.//td[@data-addr="M7"]//img[@loading="lazy"][starts-with(@src,"api/report-workbook/photo?")]')
+                assert 'data:image/' not in sheet['html']
         assert set(book['cells'])<=shown
         assert not workbooks.preview('huaxing',kind,'2026-11-03','',False)['cells']
     assert len(attempts)==1  # The failed engine does not block every template.
     monkeypatch.setattr(workbooks,'_try_native_at',0)
     monkeypatch.setattr(workbooks,'office_executable',lambda:None)
     assert workbooks.preview('huaxing','daily','2026-11-03','',True)['previewMode']=='grid'
+
+
+def test_deferred_previews_use_approved_revision_and_export_keeps_photos(db, monkeypatch):
+    from urllib.parse import urlsplit, parse_qs
+    entry = issue(db, 1, photos=3)
+    data = workbooks.projection('huaxing', 'tracking', DAY, '')
+    with monkeypatch.context() as patch:
+        patch.setattr(qc_monthly_excel, '_photo', lambda *a: pytest.fail('read image bytes before opening table'))
+        sheets, _ = workbooks.render('huaxing', 'tracking', data)
+    images = html.fromstring(sheets[0]['html']).xpath('.//td[@data-addr="M7"]//img')
+    ids = []
+    for image in images:
+        params = parse_qs(urlsplit(image.get('src')).query)
+        photo = params['photo'][0]
+        ids.append(photo)
+        assert params['entry'] == [entry['id']] and params['revision'] == [str(entry['revision'])]
+        content, mime = qc_monthly_excel.approved_photo('huaxing', entry['id'], entry['revision'], photo)
+        assert content and mime.startswith('image/')
+    assert ids == [p['id'] for p in data['tables']['tracking'][0]['photos']]
+    assert len(load_workbook(BytesIO(qc_monthly_excel.render(data,'tracking'))).active._images) == 3
+    for factory, rev in [('huadeng', entry['revision']), ('huaxing', entry['revision'] - 1)]:
+        with pytest.raises(HTTPException, match='409'):
+            qc_monthly_excel.approved_photo(factory, entry['id'], rev, ids[0])
+    revoked = transition(entry, 'revoke')
+    with pytest.raises(HTTPException, match='409'):
+        qc_monthly_excel.approved_photo('huaxing', entry['id'], entry['revision'], ids[0])
+    reapproved = transition(revoked, 'confirm')
+    assert reapproved['revision'] > entry['revision']
+    refreshed = workbooks.preview('huaxing', 'tracking', DAY, '', True)
+    refreshed_images = html.fromstring(refreshed['sheets'][0]['html']).xpath('.//td[@data-addr="M7"]//img')
+    assert len(refreshed_images) == 3
+    refreshed_params = parse_qs(urlsplit(refreshed_images[0].get('src')).query)
+    assert refreshed_params['entry'] == [entry['id']]
+    assert refreshed_params['revision'] == [str(reapproved['revision'])]
+    content, mime = qc_monthly_excel.approved_photo('huaxing', entry['id'], reapproved['revision'], refreshed_params['photo'][0])
+    assert content and mime.startswith('image/')
+    with pytest.raises(HTTPException, match='409'):
+        qc_monthly_excel.approved_photo('huaxing', entry['id'], entry['revision'], ids[0])
 
 
 def save_request(cell, value, **changes):

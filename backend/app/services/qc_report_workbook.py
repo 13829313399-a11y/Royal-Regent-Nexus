@@ -1,6 +1,7 @@
 """Render the authorized report projection through the same workbook writer used for export."""
 import atexit
 import base64
+import gzip
 import json
 import logging
 import re
@@ -12,10 +13,12 @@ from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Lock
+from threading import Lock, Thread
 from time import monotonic
+from urllib.parse import urlencode
 
 from fastapi import HTTPException
+from starlette.responses import JSONResponse, Response
 from lxml import etree, html
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
@@ -32,6 +35,8 @@ KINDS = {'daily', 'detail', 'issues', *monthly.design.NAMES, *ANNUAL_KINDS}
 RECORD_KINDS = {'daily', 'issues', *ANNUAL_KINDS}
 _cache = OrderedDict()
 _render_lock = Lock()
+_cache_lock = Lock()
+_warm_attempted = False
 MAX_CACHE_BYTES = 32 * 1024 * 1024
 log = logging.getLogger(__name__)
 _try_native_at = 0
@@ -61,7 +66,7 @@ def stop_worker():
 atexit.register(stop_worker)
 
 
-def resident_render(executable, source):
+def start_worker(executable):
     global _worker
     if sys.platform not in {'darwin','linux'}:
         return False
@@ -86,6 +91,36 @@ def resident_render(executable, source):
         except OSError:
             stop_worker()
             return False
+    return True
+
+
+def warm_on_report_visit():
+    """Start Calc once while the report summary loads; never wait on the HTTP thread."""
+    global _warm_attempted
+    if _warm_attempted or not _render_lock.acquire(blocking=False):
+        return
+    if _warm_attempted:
+        _render_lock.release()
+        return
+    _warm_attempted = True
+
+    def warm():
+        try:
+            executable = office_executable()
+            if executable:
+                start_worker(executable)
+        finally:
+            _render_lock.release()
+
+    try:
+        Thread(target=warm, name='qc-preview-warm', daemon=True).start()
+    except RuntimeError:
+        _render_lock.release()
+
+
+def resident_render(executable, source):
+    if not start_worker(executable):
+        return False
     try:
         _worker.stdin.write(json.dumps(str(source))+'\n')
         _worker.stdin.flush()
@@ -146,11 +181,10 @@ def writable_cells(kind, data):
         bind(0, data['tables']['footer'], len(rows)+7, qc_weekly_excel.FOOTER_COLUMNS,
              fields={3:'returns', 5:'returnReason', 6:'hongKongContact', 7:'reworkA0D', 8:'weeklyRemark'})
     elif kind == 'quality':
-        from app.services.qc_monthly_overview_excel import re_number
+        from app.services.qc_report_empty_cols import formula_boxes
 
         def computed_boxes(row, column):
-            qty, pack, boxes = row['values'][6:9]
-            return column == 8 and boxes == '' and re_number(qty) and re_number(pack) and float(pack) > 0
+            return column == 8 and formula_boxes(row['values'])
 
         overview = data['overview']
         bind(1, rows, 7, computed=computed_boxes)
@@ -274,9 +308,33 @@ def sheet_html(table, folder, sheet):
     return html.tostring(table, encoding='unicode')
 
 
+def attach_preview_photos(sheet, rows):
+    table = html.fromstring(sheet['html'])
+    cells = {td.get('data-addr'): td for td in table.xpath('.//td[@data-addr]')}
+    for r, row in enumerate(rows, 7):
+        photos = row['photos']
+        if not photos:
+            continue
+        cell = cells.get(f'M{r}')
+        if cell is None:
+            raise ValueError('Workbook omitted a report photo cell')
+        columns, width, height = qc_monthly_excel._photo_slots(len(photos), monthly.design.TRACKING_WIDTHS[12],
+                                                              min(530, len(photos)*84))
+        gallery = etree.SubElement(cell, 'span', style=f'display:grid;grid-template-columns:repeat({columns},minmax(0,1fr));justify-items:center')
+        for photo in photos:
+            query = urlencode({'entry': row['id'], 'revision': row['revision'], 'photo': photo['id']})
+            etree.SubElement(gallery, 'img', src='api/report-workbook/photo?' + query, loading='lazy',
+                             decoding='async', width=str(max(1,int(width))), height=str(max(1,int(height))),
+                             style='object-fit:contain;max-width:100%', alt='现场照片')
+    sheet['html'] = html.tostring(table, encoding='unicode')
+
+
 def render(factory, kind, data):
     from app.services.qc_report_grid import render_grid
     global _try_native_at
+    photo_kind = kind in {'tracking', 'issues', 'annual-issues'}
+    if photo_kind:
+        data = dict(data, deferPreviewPhotos=True)
     if kind == 'annual-stats':
         from app.services.qc_annual_excel import workbook
         content = workbook(data)
@@ -289,6 +347,7 @@ def render(factory, kind, data):
     else:
         content = qc_monthly_excel.render(data, kind, factory)
     executable = office_executable() if monotonic() >= _try_native_at else None
+    sheets = None
     if executable:
         try:
             sheets = render_native(executable, content, kind == 'detail')
@@ -296,11 +355,19 @@ def render(factory, kind, data):
                         for addr in re.findall(r'<td\b[^>]*\bdata-addr="([A-Z]+\d+)"',s['html'])}
             if not set(writable_cells(kind,data)) <= rendered:
                 raise ValueError('Calc omitted editable cells')
-            return sheets, 'calc'
+            if photo_kind and any(row['photos'] and f'0:M{r}' not in rendered for r, row in
+                                  enumerate(data['tables']['tracking' if kind == 'tracking' else 'issues'], 7)):
+                raise ValueError('Calc omitted a report photo cell')
         except (OSError, ValueError, subprocess.SubprocessError, etree.LxmlError) as exc:
             _try_native_at = monotonic() + 30
             log.warning('QC native workbook preview temporarily unavailable (%s); using the grid', type(exc).__name__)
-    return render_grid(content, kind == 'detail'), 'grid'
+            sheets = None
+    mode = 'calc' if sheets is not None else 'grid'
+    if sheets is None:
+        sheets = render_grid(content, kind == 'detail')
+    if photo_kind:
+        attach_preview_photos(sheets[0], data['tables']['tracking' if kind == 'tracking' else 'issues'])
+    return sheets, mode
 
 
 def render_native(executable, content, legacy):
@@ -330,6 +397,15 @@ def render_native(executable, content, legacy):
         return [dict(name=name, html=sheet_html(table, folder, i)) for i,(name,table) in enumerate(zip(names,tables))]
 
 
+def cached_preview(key):
+    with _cache_lock:
+        entry = _cache.get(key)
+        if entry and (entry[2] != 'grid' or entry[3] > monotonic()):
+            _cache.move_to_end(key)
+            return entry[0], entry[2]
+    return None
+
+
 def preview(factory, kind, day, customer, can_edit, result='FAIL'):
     if kind not in KINDS:
         raise HTTPException(404, '模板不存在')
@@ -343,22 +419,36 @@ def preview(factory, kind, day, customer, can_edit, result='FAIL'):
     versions = qc_weekly_excel.versions(data) if 'fields' in data else {}
     stamps = {k:cell['version'] for k,cell in writable.items()} if kind in RECORD_KINDS else versions
     key = factory, kind, day, customer, result, revision, sha256(json.dumps(stamps, sort_keys=True).encode()).digest()
-    with _render_lock:
-        cached = _cache.get(key)
-        if not cached or (cached[2] == 'grid' and cached[3] <= monotonic()):
-            if kind in ANNUAL_KINDS:
-                rows = data['totals']['total'] if kind == 'annual-stats' else data['total']
-            else:
-                rows = data['rows'] if kind == 'daily' else data['tables'][kind]
-            sheets, mode = render(factory, kind, data) if rows else ([], 'calc')
-            size = sum(len(s['html'].encode()) for s in sheets)
-            if size <= MAX_CACHE_BYTES:
-                _cache[key] = (sheets, size, mode, monotonic()+15)
-                _cache.move_to_end(key)
-                while len(_cache)>18 or sum(x[1] for x in _cache.values())>MAX_CACHE_BYTES:
-                    _cache.popitem(last=False)
-        else:
-            sheets, _, mode, _ = cached
-            _cache.move_to_end(key)
+    cached = cached_preview(key)
+    if cached is None:
+        with _render_lock:
+            cached = cached_preview(key)
+            if cached is None:
+                if kind in ANNUAL_KINDS:
+                    rows = data['totals']['total'] if kind == 'annual-stats' else data['total']
+                else:
+                    rows = data['rows'] if kind == 'daily' else data['tables'][kind]
+                cached = render(factory, kind, data) if rows else ([], 'calc')
+                sheets, mode = cached
+                size = sum(len(s['html'].encode()) for s in sheets)
+                if size <= MAX_CACHE_BYTES:
+                    with _cache_lock:
+                        _cache[key] = (sheets, size, mode, monotonic()+15)
+                        _cache.move_to_end(key)
+                        while len(_cache)>18 or sum(x[1] for x in _cache.values())>MAX_CACHE_BYTES:
+                            _cache.popitem(last=False)
+    sheets, mode = cached
     return dict(sheets=sheets, cells=cells, sourceRevision=revision, versions=versions,
                 previewMode=mode, workbookSourceRevision=data.get('workbookSourceRevision'))
+
+
+def preview_response(payload, accept_encoding, headers):
+    headers = {**headers, 'Vary': 'Accept-Encoding'}
+    response = JSONResponse(payload, headers=headers)
+    if len(response.body) >= 2048:
+        for item in accept_encoding.lower().split(','):
+            match = re.fullmatch(r'\s*gzip\s*(?:;\s*q\s*=\s*(0(?:\.\d{0,3})?|1(?:\.0{0,3})?))?\s*', item)
+            if match and float(match[1] or '1') > 0:
+                return Response(gzip.compress(response.body, compresslevel=1), media_type='application/json',
+                                headers={**headers, 'Content-Encoding': 'gzip'})
+    return response

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { HomeMotion } from '@/composables/useHomeAppearance'
 import type { DialogContentEmits, DialogContentProps } from 'reka-ui'
 import type { HTMLAttributes } from 'vue'
 import { computed } from 'vue'
@@ -17,6 +18,7 @@ defineOptions({
 })
 
 interface Props extends DialogContentProps {
+  motion?: HomeMotion
   side?: 'right' | 'left' | 'bottom'
   class?: HTMLAttributes['class']
   overlayClass?: HTMLAttributes['class']
@@ -32,6 +34,7 @@ const emits = defineEmits<DialogContentEmits>()
 const delegatedProps = computed(() => {
   const {
     side: _side,
+    motion: _motion,
     class: _class,
     overlayClass: _overlayClass,
     showCloseButton: _showCloseButton,
@@ -56,6 +59,7 @@ const sideClasses: Record<'right' | 'left' | 'bottom', string> = {
   <DialogPortal>
     <DialogOverlay
       data-slot="drawer-overlay"
+      :data-rr-local-backdrop="motion"
       :class="
         cn(
           'ui-overlay fixed inset-0 z-50 bg-slate-950/35 backdrop-blur-[3px]',
@@ -65,6 +69,7 @@ const sideClasses: Record<'right' | 'left' | 'bottom', string> = {
     />
     <DialogContent
       data-slot="drawer-content"
+      :data-rr-local-panel="motion"
       :data-side="side"
       v-bind="{ ...$attrs, ...forwarded }"
       :class="

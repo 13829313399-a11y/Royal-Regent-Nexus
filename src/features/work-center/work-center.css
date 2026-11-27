@@ -643,6 +643,18 @@
 .nc-detail-sheet {
   max-height: 88dvh;
 }
+.nc-detail-sheet[data-rr-local-panel][data-side='bottom'] { height: min(38rem, 80dvh); }
+.nc-detail-sheet[data-rr-local-panel] > .nc-detail { flex: 1; min-height: 0; }
+.nc-sheet-heading {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  padding: .35rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+.nc-sheet-heading h2 { font-size: 1rem; font-weight: 650; }
+.nc-sheet-loading { padding: 1rem; font-size: .875rem; color: var(--muted-foreground); }
 .nc-spin {
   animation: nc-turn 1s linear infinite;
 }

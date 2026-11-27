@@ -16,6 +16,7 @@ test('fit keeps the existing sheet and proportions, never enlarges it, and floor
   let onResize;
   w.ResizeObserver=class{constructor(callback){onResize=callback;}observe(){}};
   w.fetch=async()=>({ok:true,json:async()=>({sheets:[{name:'明细',html:'<table><colgroup width="38"><colgroup span="5" width="300"><tbody><tr><td data-addr="A1">内容</td></tr></tbody></table>'}],cells:{}})});
+  w.eval(fs.readFileSync(path.join(__dirname,'qc-export-columns.js'),'utf8'));
   w.eval(fs.readFileSync(path.join(__dirname,'qc-report-workbook.js'),'utf8'));
   const view=d.getElementById('wb-grid');
   let available=1400;
@@ -54,6 +55,7 @@ test('monthly preview opens the filtered workbook, confirms edits before switchi
     if (q.get('kind') === 'tracking') result = {sheets:[],cells:{}};
     return {ok:true,json:async()=>result};
   };
+  w.eval(fs.readFileSync(path.join(__dirname,'qc-export-columns.js'),'utf8'));
   w.eval(fs.readFileSync(path.join(__dirname,'qc-report-workbook.js'),'utf8'));
   try {
     w.QcReportWorkbook.mount('monthly','quality',doc.getElementById('summary'),{date:'2026-11-01',tables:{quality:[]},overview:{months:[{month:1,rate:0}]}},()=>{});
@@ -83,7 +85,78 @@ test('monthly preview opens the filtered workbook, confirms edits before switchi
 });
 
 const MIME_XLSX='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+test('switch shares a pending adjacent preview and ignores a late response after switching back',async t=>{
+  const h=await exportWorkbook(t,'monthly','quality');
+  const {w,d}=h, requests=[];
+  // jsdom's default hidden document suppresses speculative loads during setup.
+  Object.defineProperty(d,'hidden',{value:false});
+  w.fetch=(url,options)=>new Promise(resolve=>{
+    const kind=new URL(url,'http://localhost').searchParams.get('kind');
+    requests.push({kind,signal:options.signal,finish:()=>resolve({ok:true,json:async()=>({
+      cells:{},sheets:[{name:kind,html:`<table><tr><td data-addr="A1">${kind}</td></tr></table>`}]
+    })})});
+  });
+  const click=kind=>d.querySelector(`#wb-templates [data-kind="${kind}"]`).click();
+  const tick=()=>new Promise(setImmediate);
+  click('orders');await tick();
+  requests[0].finish();await tick();
+  assert.deepEqual(requests.map(r=>r.kind),['orders','tracking']);
+  click('tracking');await tick();
+  assert.equal(requests.length,2);
+  assert.equal(d.getElementById('wb-grid').getAttribute('aria-busy'),'true');
+  click('orders');await tick();
+  assert.equal(requests[1].signal.aborted,true);
+  requests[1].finish();await tick();
+  assert.equal(d.querySelector('#wb-templates [aria-pressed=true]').dataset.kind,'orders');
+  assert.equal(d.getElementById('wb-grid').shadowRoot.querySelector('td').textContent,'orders');
+  assert.equal(d.getElementById('wb-grid').inert,false);
+});
+test('template round trips reuse previews until expiry, save or dialog close',async t=>{
+  const {w,d,calls}=await exportWorkbook(t);
+  const click=async selector=>{d.querySelector(selector).click();await new Promise(setImmediate);};
+  const select=kind=>click(`#wb-templates [data-kind="${kind}"]`);
+  const reads=()=>calls.filter(c=>c.url.startsWith('api/report-workbook?')).length;
+  for(const kind of ['orders','tracking','quality','orders','tracking'])await select(kind);
+  assert.equal(reads(),3);
+  const now=w.Date.now();
+  w.Date.now=()=>now+31000;
+  await select('quality');
+  assert.equal(reads(),4);
+  await select('orders');
+  const grid=d.getElementById('wb-grid').shadowRoot;
+  grid.querySelector('td').dispatchEvent(new w.MouseEvent('dblclick',{bubbles:true}));
+  grid.querySelector('textarea').value='已修改';
+  await select('quality');
+  await click('[data-wb-choice=save]');
+  assert.equal(reads(),6,'save invalidates the recently read quality preview');
+  await click('#wb-close');await click('.wb-open');
+  assert.equal(reads(),7,'reopening requires a fresh read');
+});
 const MIME_XLS='application/vnd.ms-excel';
+test('annual summary warms only its filtered workbook and adjacent tracking preview; opening both reuses the reads',async t=>{
+  const {w,d,calls}=await exportWorkbook(t,'yearly','annual-stats');
+  const tick=()=>new Promise(setImmediate);
+  d.getElementById('wb-close').click();await tick();
+  calls.length=0;
+  d.querySelector('main').className='page active';
+  d.getElementById('qstats-client').innerHTML='<option value="client-07">客户</option>';
+  Object.defineProperty(d,'hidden',{value:false});
+  let warm;
+  const timeout=w.setTimeout;
+  w.setTimeout=(fn,ms,...args)=>ms===100?(warm=fn,1):timeout(fn,ms,...args);
+  w.QcReportWorkbook.mount('yearly','annual-stats',d.getElementById('summary'),{months:[],totals:{total:12}},()=>{});
+  await warm();await tick();
+  const reads=()=>calls.map(c=>new URL(c.url,'http://localhost').searchParams);
+  assert.deepEqual(reads().map(q=>q.get('kind')),['annual-stats','annual-issues']);
+  assert.ok(reads().every(q=>q.get('customer')==='client-07'&&q.get('day')==='2026-01-01'));
+  assert.equal(reads()[0].get('result'),'ALL');
+  assert.equal(reads()[1].has('result'),false);
+  d.querySelector('.wb-open').click();await tick();
+  d.querySelector('#wb-templates [data-kind="annual-issues"]').click();await tick();
+  assert.equal(reads().length,2);
+  assert.equal(d.querySelector('#wb-templates [aria-pressed="true"]').dataset.kind,'annual-issues');
+});
+
 async function exportWorkbook(t, period='monthly', kind='quality', options={}){
   const dom=new JSDOM('<main><input id="monthlyMonth" value="2026-11"><input id="dailyDate" value="2026-11-22"><input id="weeklyDate" value="2026-11-16"><input id="qstats-year" value="2026"><div id="qstats-root"><button data-result="ALL" aria-pressed="true"></button></div>'+
     ['qmtCustomer','qdrCustomer','qwtCustomer','qstats-client'].map(id=>`<select id="${id}"><option value="">全部</option></select>`).join('')+
@@ -91,6 +164,7 @@ async function exportWorkbook(t, period='monthly', kind='quality', options={}){
   const w=dom.window,d=w.document,calls=[],downloads=[],picks=[],written=[];
   t.after(()=>w.close());
   w.__QC_NEXUS={factory:'huaxing',exportAllowed:true};
+  w.HTMLElement.prototype.scrollTo=()=>{};
   w.HTMLDialogElement.prototype.showModal=function(){this.open=true};
   w.HTMLDialogElement.prototype.close=function(){this.open=false};
   const objectUrls=[];
@@ -119,8 +193,14 @@ async function exportWorkbook(t, period='monthly', kind='quality', options={}){
   w.fetch=async(url,init)=>{
     calls.push({url,method:init?.method||'GET',payload:init?.body?JSON.parse(init.body):undefined});
     if(init?.method==='HEAD')return {ok:true};
-    if(url.startsWith('api/report-workbook?'))return {ok:true,json:async()=>structuredClone(data)};
-    if(url.includes('-templates/save?'))return {ok:true,json:async()=>({...JSON.parse(init.body),version:2})};
+    if(url.startsWith('api/report-workbook?')){
+      const kind=new URL(url,w.location.href).searchParams.get('kind');
+      return {ok:true,json:async()=>structuredClone(await (options.workbook?.(kind,data)??data))};
+    }
+    if(url.includes('-templates/save?')){
+      const payload=JSON.parse(init.body);
+      return {ok:true,json:async()=>options.save?.(payload)??{...payload,version:2}};
+    }
     if(init?.method==='POST')return {ok:true,json:async()=>({url:options.unsafeUrl||pathname,filename:`备用.${suffix}`})};
     if(options.failure)return {ok:false,json:async()=>({detail:'导出文件已过期，请重新导出'})};
     const headers=new Headers({'Content-Type':options.badMime?'text/html':legacy?MIME_XLS:MIME_XLSX,
@@ -135,6 +215,7 @@ async function exportWorkbook(t, period='monthly', kind='quality', options={}){
       write:async blob=>written.push(blob),close:async()=>written.push('closed'),abort:async()=>written.push('aborted'),
     })});
   };
+  w.eval(fs.readFileSync(path.join(__dirname,'qc-export-columns.js'),'utf8'));
   w.eval(fs.readFileSync(path.join(__dirname,'qc-report-workbook.js'),'utf8'));
   const mountData={overview:{months:[]},months:[],tables:{}};
   w.QcReportWorkbook.mount(period,kind,d.getElementById('summary'),mountData,()=>{});
@@ -142,6 +223,84 @@ async function exportWorkbook(t, period='monthly', kind='quality', options={}){
   await new Promise(setImmediate);
   return {w,d,calls,downloads,picks,written,body,objectUrls};
 }
+
+function reportWithPhoto(data,revision,cell={...data.cells['0:A1'],field:'detail:e1:improvement'}){
+  return {...data,sourceRevision:'source-'+revision,workbookSourceRevision:'approval-'+revision,
+    cells:{'0:A1':cell},versions:{[cell.customerKey]:{[cell.field]:cell.version}},
+    sheets:[{name:'整改跟踪',html:`<table><tr><td data-addr="A1">${cell.value}</td><td data-addr="M1"><img src="api/report-workbook/photo?entry=e1&amp;revision=${revision}&amp;photo=p1" loading="lazy"></td></tr></table>`}]};
+}
+
+test('a photo refresh started during a save cannot cache the pre-save workbook',async t=>{
+  for(const late of [false,true])await t.test(late?'photo response after save':'photo response during save',async sub=>{
+    let savedCell,completeSave,completePhotos,delayPhoto=false;
+    const {d,w,calls}=await exportWorkbook(sub,'monthly','tracking',{
+      workbook(kind,data){
+        if(kind!=='tracking')return data;
+        const snapshot=reportWithPhoto(data,2,savedCell);
+        if(delayPhoto){delayPhoto=false;return new Promise(resolve=>{completePhotos=()=>resolve(snapshot);});}
+        return snapshot;
+      },
+      save(payload){return new Promise(resolve=>{completeSave=()=>{
+        savedCell={...payload,version:2};resolve(savedCell);
+      };});}
+    });
+    const grid=d.getElementById('wb-grid').shadowRoot;
+    grid.querySelector('td').dispatchEvent(new w.MouseEvent('dblclick',{bubbles:true}));
+    grid.querySelector('.cell-editor').value='已保存的整改措施';
+    d.getElementById('wb-dialog').dispatchEvent(new w.KeyboardEvent('keydown',{key:'s',ctrlKey:true,bubbles:true,cancelable:true}));
+    await new Promise(setImmediate);
+    assert.equal(typeof completeSave,'function');
+    delayPhoto=late;
+    grid.querySelector('img').dispatchEvent(new w.Event('error'));
+    await new Promise(setImmediate);
+    completeSave();
+    await new Promise(setImmediate);
+    if(late){completePhotos();await new Promise(setImmediate);}
+    assert.equal(d.getElementById('wb-status').textContent,'已保存');
+    d.querySelector('[data-kind="orders"]').click();
+    await new Promise(setImmediate);
+    d.querySelector('[data-kind="tracking"]').click();
+    await new Promise(setImmediate);
+    assert.equal(calls.filter(call=>call.url.includes('report-workbook?kind=tracking')).length,3);
+    assert.equal(grid.querySelector('td').textContent,'已保存的整改措施');
+  });
+});
+
+test('Excel is not committed when photo refresh reports an outdated workbook during export',async t=>{
+  for(const pendingWrite of [false,true])await t.test(pendingWrite?'before stream commit':'while choosing a location',async sub=>{
+    let revision=2,select,finishWrite;
+    const actions=[];
+    const {d,w,calls,picks,downloads}=await exportWorkbook(sub,'monthly','tracking',{
+      workbook:(kind,data)=>kind==='tracking'?reportWithPhoto(data,revision):data,
+      picker:()=>new Promise(resolve=>{select=resolve;})
+    });
+    const button=d.getElementById('wb-export'),grid=d.getElementById('wb-grid').shadowRoot;
+    const handle={name:'整改跟踪.xlsx',createWritable:async()=>{
+      actions.push('opened');
+      return {write:()=>new Promise(resolve=>{finishWrite=resolve;}),
+        close:async()=>actions.push('committed'),abort:async()=>actions.push('aborted')};
+    }};
+    button.click();
+    await new Promise(setImmediate);
+    assert.equal(picks.length,1);
+    if(pendingWrite){select(handle);await new Promise(setImmediate);assert.equal(typeof finishWrite,'function');}
+    revision=4;
+    grid.querySelector('img').dispatchEvent(new w.Event('error'));
+    await new Promise(setImmediate);
+    assert.match(grid.querySelector('img').src,/revision=4/);
+    if(pendingWrite)finishWrite();
+    else select(handle);
+    await new Promise(setImmediate);
+    assert.deepEqual(actions,pendingWrite?['opened','aborted']:[]);
+    assert.match(d.getElementById('wb-status').textContent,/报表已更新.*重新打开/);
+    assert.equal(button.textContent,'导出 Excel');
+    assert.equal(downloads.length,0);
+    button.click();
+    await new Promise(setImmediate);
+    assert.equal(picks.length,1);
+    assert.equal(calls.filter(call=>call.method==='POST').length,1);
+  });
+});
 
 test('all eight report types obtain and validate the attachment before the system picker', async t=>{
   for(const [period,kind,endpoint,separate] of [
@@ -173,6 +332,20 @@ test('all eight report types obtain and validate the attachment before the syste
   }
 });
 
+test('changing the column preference discards a prepared workbook and reissues the scoped export',async t=>{
+  const h=await exportWorkbook(t,'monthly','quality',{slow:true});
+  const exportButton=h.d.querySelector('#wb-export'),toggle=h.d.querySelector('#wb-dialog .qc-export-option input');
+  assert.ok(toggle.checked);
+  exportButton.click();await new Promise(setImmediate);
+  assert.equal(exportButton.textContent,'选择保存位置');
+  toggle.click();
+  assert.equal(exportButton.textContent,'导出 Excel');
+  exportButton.click();await new Promise(setImmediate);
+  assert.deepEqual(h.calls.filter(c=>c.method==='POST').map(c=>c.payload.hideEmptyCols),[true,false]);
+  assert.equal(h.w.localStorage.getItem('qc.export.hideEmptyCols'),'0');
+  assert.deepEqual(h.picks,[]);
+});
+
 test('confirmation saves the draft first; slow generation requests a new click on the same button',async t=>{
   let select;
   const writes=[];
@@ -199,24 +372,32 @@ test('confirmation saves the draft first; slow generation requests a new click o
   })});
   await new Promise(setImmediate);
   assert.deepEqual(writes,[h.body,'closed']);
-  assert.equal(d.getElementById('wb-status').textContent,'Excel 已保存并校验：核对后的月报.xlsx');
+  assert.match(d.getElementById('wb-status').textContent,/^Excel 已保存并校验：核对后的月报\.xlsx/);
   assert.equal(d.getElementById('wb-export').textContent,'导出 Excel');
   assert.equal(w.QcReportWorkbook.navigationState().dirty,false);
 });
 
-test('unsupported or canceled picker never silently writes a file',async t=>{
-  for(const options of [{noPicker:true},{picker:()=>Promise.reject(new DOMException('embedded abort','AbortError'))}]){
-    const {d,w,calls,downloads}=await exportWorkbook(t,'monthly','quality',options);
+test('HTTP and restricted pickers download the same validated file once after saving; cancellation never downloads',async t=>{
+  for(const [options,canceled] of [[{noPicker:true},false],
+    [{picker:()=>Promise.reject(new DOMException('blocked','SecurityError'))},false],
+    [{picker:()=>Promise.reject(new DOMException('canceled','AbortError'))},true]]){
+    const {d,w,calls,downloads,objectUrls,body}=await exportWorkbook(t,'monthly','quality',{...options,managed:true});
+    Object.defineProperty(w.crypto,'randomUUID',{value:undefined});
     const grid=d.getElementById('wb-grid').shadowRoot;
     grid.querySelector('td').dispatchEvent(new w.MouseEvent('dblclick',{bubbles:true}));
     grid.querySelector('.cell-editor').value='仍待保存';
     d.getElementById('wb-export').click();
-    if(!options.noPicker)d.querySelector('[data-wb-choice=save]').click();
+    assert.equal(d.querySelector('#wb-save-prompt').open,true);
+    d.querySelector('[data-wb-choice=save]').click();
     await new Promise(setImmediate);
-    assert.equal(calls.some(x=>x.method==='POST' || x.url.includes('/excel')),!options.noPicker);
-    assert.equal(downloads.length,0);
-    assert.equal(w.QcReportWorkbook.navigationState().dirty,!!options.noPicker);
-    assert.match(d.getElementById('wb-status').textContent,/未导出.*桌面 Chrome 或 Edge/);
+    const posts=calls.filter(x=>x.method==='POST');
+    assert.equal(posts.length,2);
+    assert.match(posts[0].payload.requestKey,/^[\da-f]{32}$/);
+    assert.equal(posts[1].payload.versions.client.overviewRemark,2);
+    assert.equal(w.QcReportWorkbook.navigationState().dirty,false);
+    assert.deepEqual(objectUrls,canceled?[]:[body]);
+    assert.deepEqual(downloads.map(x=>x.name),canceled?[]:['已校验中文.xlsx']);
+    assert.match(d.getElementById('wb-status').textContent,canceled?/已取消/:/已发起下载/);
   }
 });
 
@@ -309,6 +490,7 @@ async function editableWorkbook(t, {readonly=false,record=false}={}) {
     const version=++versions[body.field];
     return {ok:true,json:async()=>({...body,version})};
   };
+  w.eval(fs.readFileSync(path.join(__dirname,'qc-export-columns.js'),'utf8'));
   w.eval(fs.readFileSync(path.join(__dirname,'qc-report-workbook.js'),'utf8'));
   w.QcReportWorkbook.mount('monthly','quality',doc.getElementById('summary'),{overview:{months:[]}},()=>{});
   doc.querySelector('.wb-open').click();
@@ -615,4 +797,117 @@ test('close offers save, discard and cancel; tab hiding and focus changes never 
   await wait();
   assert.equal(dialog.open,false);
   assert.deepEqual(calls.map(c=>c.value),['明确保存']);
+});
+
+test('workbook photo retry and thumbnail error refresh stale approved revision without losing edits',async t=>{
+  const dom=new JSDOM('<main><input id="monthlyMonth" value="2026-11"><select id="qmtCustomer"><option value="">全部</option></select><section class="template-sheet"><div id="summary"></div></section></main>',{runScripts:'outside-only',url:'http://localhost/qc/',pretendToBeVisual:true});
+  const w=dom.window,doc=w.document;
+  t.after(()=>w.close());
+  w.__QC_NEXUS={factory:'huaxing',exportAllowed:true};
+  w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};
+  w.HTMLDialogElement.prototype.close=function(){this.open=false;};
+  w.HTMLElement.prototype.scrollTo=()=>{};
+  const makeHtml=rev=>rev===null
+    ? '<table><tr><td data-addr="A7"></td><td data-addr="M7"></td></tr></table>'
+    : `<table><tr><td data-addr="A7"></td><td data-addr="M7"><span><img src="api/report-workbook/photo?entry=e1&revision=${rev}&photo=p1" loading="lazy"><img src="api/report-workbook/photo?entry=e1&revision=${rev}&photo=p2" loading="lazy"></span></td></tr></table>`;
+  let serverRevision=2, previewFetches=0;
+  w.fetch=async url=>{
+    if(String(url).startsWith('api/report-workbook?')){
+      previewFetches++;
+      return {ok:true,json:async()=>({
+        sheets:[{name:'问题整改跟踪',html:makeHtml(serverRevision)}],
+        cells:{'0:A7':{customerKey:'c1',field:'detail:e1:improvement',value:'',version:0,type:'text'}},
+        versions:{c1:{}},sourceRevision:'src-'+serverRevision,previewMode:'calc'
+      })};
+    }
+    throw new Error('unexpected fetch: '+url);
+  };
+  w.eval(fs.readFileSync(path.join(__dirname,'qc-photo-shapes.js'),'utf8'));
+  w.eval(fs.readFileSync(path.join(__dirname,'qc-inspection-summary.js'),'utf8'));
+  w.eval(fs.readFileSync(path.join(__dirname,'qc-export-columns.js'),'utf8'));
+  w.eval(fs.readFileSync(path.join(__dirname,'qc-report-workbook.js'),'utf8'));
+  w.QcReportWorkbook.mount('monthly','tracking',doc.getElementById('summary'),{tables:{tracking:[{values:Array(19).fill('')}]},total:1},()=>{});
+  doc.querySelector('.wb-open').click();
+  await new Promise(setImmediate);
+  const grid=doc.getElementById('wb-grid').shadowRoot;
+  const tableImgs=[...grid.querySelectorAll('td[data-addr="M7"] img')];
+  assert.equal(tableImgs.length,2);
+  assert.equal(tableImgs[0].getAttribute('src'),'api/report-workbook/photo?entry=e1&revision=2&photo=p1');
+  // Keep an unsaved draft cell while refreshing photo URLs.
+  const editableCell=grid.querySelector('td[data-addr="A7"]');
+  editableCell.dispatchEvent(new w.MouseEvent('dblclick',{bubbles:true,composed:true}));
+  const editor=editableCell.querySelector('.cell-editor');
+  editor.value='待保存整改措施';editor.dispatchEvent(new w.Event('input'));editor.blur();
+  assert.equal(w.QcReportWorkbook.navigationState().dirty,true);
+
+  // Record is revoked and re-approved -> revision jumps from 2 to 4.
+  serverRevision=4;
+  // User zooms the photo while the lightbox still holds revision=2, hits 409 error, and clicks retry.
+  grid.querySelector('.wb-photo').click();
+  const lightbox=doc.querySelector('#wb-photo-viewer'), boxImg=lightbox.querySelector('img');
+  assert.equal(boxImg.getAttribute('src'),'api/report-workbook/photo?entry=e1&revision=2&photo=p1');
+  const retryButton=lightbox.querySelector('[data-photo-retry]');
+  const photoActions=retryButton.closest('.qis-photo-viewer-actions');
+  assert.equal(photoActions.hidden,true);
+  boxImg.onerror();
+  assert.equal(photoActions.hidden,false);
+  assert.equal(retryButton.hidden,false);
+  const fetchesBeforeRetry=previewFetches;
+  retryButton.click();
+  await new Promise(setImmediate);
+  await new Promise(setImmediate);
+  assert.equal(previewFetches,fetchesBeforeRetry+1,'retry bypasses the 30s frontend preview cache');
+  assert.equal(boxImg.getAttribute('src'),'api/report-workbook/photo?entry=e1&revision=4&photo=p1');
+  assert.equal(photoActions.hidden,true);
+  assert.equal(tableImgs[0].getAttribute('src'),'api/report-workbook/photo?entry=e1&revision=4&photo=p1');
+  assert.equal(tableImgs[1].getAttribute('src'),'api/report-workbook/photo?entry=e1&revision=4&photo=p2');
+  assert.equal(editableCell.textContent,'待保存整改措施');
+  assert.equal(w.QcReportWorkbook.navigationState().dirty,true);
+  const status=doc.getElementById('wb-status');
+  assert.match(status.textContent,/报表已更新.*草稿/);
+  // Stepping to the second photo in the same lightbox already carries the refreshed revision=4.
+  lightbox.querySelector('[data-photo-next]').click();
+  assert.equal(boxImg.getAttribute('src'),'api/report-workbook/photo?entry=e1&revision=4&photo=p2');
+  lightbox.querySelector('[data-photo-close]').click();
+
+  // Once a record is revoked, a later thumbnail can fail after the first refresh completes.
+  serverRevision=null;
+  const fetchesBeforeRevoke=previewFetches;
+  tableImgs[0].onerror();
+  await new Promise(setImmediate);
+  assert.equal(previewFetches,fetchesBeforeRevoke+1);
+  assert.equal(tableImgs[0].getAttribute('src'),'api/report-workbook/photo?entry=e1&revision=4&photo=p1');
+  tableImgs[1].onerror();
+  tableImgs[0].onerror();
+  await new Promise(setImmediate);
+  assert.equal(previewFetches,fetchesBeforeRevoke+1,'staggered errors share one automatic refresh per opened preview');
+
+  // Manual retry can still recover after the automatic attempt has been used.
+  serverRevision=6;
+  tableImgs[0].closest('button').click();
+  const reopenedViewer=doc.querySelector('#wb-photo-viewer');
+  const reopenedImage=reopenedViewer.querySelector('img');
+  reopenedImage.onerror();
+  reopenedViewer.querySelector('[data-photo-retry]').click();
+  await new Promise(setImmediate);
+  assert.equal(previewFetches,fetchesBeforeRevoke+2);
+  assert.equal(reopenedImage.getAttribute('src'),'api/report-workbook/photo?entry=e1&revision=6&photo=p1');
+  assert.equal(tableImgs[1].getAttribute('src'),'api/report-workbook/photo?entry=e1&revision=6&photo=p2');
+  reopenedViewer.querySelector('[data-photo-close]').click();
+  assert.equal(editableCell.textContent,'待保存整改措施');
+  assert.match(status.textContent,/报表已更新.*草稿/);
+
+  doc.getElementById('wb-close').click();
+  doc.querySelector('[data-wb-choice=discard]').click();
+  await new Promise(setImmediate);
+  doc.querySelector('.wb-open').click();
+  await new Promise(setImmediate);
+  assert.equal(status.textContent,'');
+  const fetchesAfterReopen=previewFetches;
+  serverRevision=8;
+  grid.querySelector('img').onerror();
+  await new Promise(setImmediate);
+  assert.equal(previewFetches,fetchesAfterReopen+1);
+  assert.match(grid.querySelector('img').getAttribute('src'),/revision=8/);
+  assert.equal(status.textContent,'报表已更新，请重新打开核对');
 });

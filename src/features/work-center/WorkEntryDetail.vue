@@ -13,7 +13,7 @@ import WorkSnoozePopover from './WorkSnoozePopover.vue'
 import WorkStageStepper from './WorkStageStepper.vue'
 import type { WorkEntry } from './types'
 
-const props = defineProps<{ entry: WorkEntry }>()
+const props = defineProps<{ entry: WorkEntry; spatial?: boolean; sheet?: boolean }>()
 defineEmits<{ close: [] }>()
 const center = useWorkCenterStore(),
   actions = useWorkActions()
@@ -69,7 +69,7 @@ const attribution = computed(() =>
 <template>
   <section class="nc-detail" aria-label="事项预览">
     <header class="nc-detail-bar">
-      <span class="nc-module-label">{{ moduleMeta(entry.module).label }}</span
+      <span class="nc-module-label"><span v-if="spatial" data-rr-detail-target class="nc-module-icon rr-detail-target" :class="moduleMeta(entry.module).color" aria-hidden="true"><component :is="moduleMeta(entry.module).icon" :size="17" /></span>{{ moduleMeta(entry.module).label }}</span
       ><span class="nc-tools"
         ><WorkIconButton
           :icon="Pin"
@@ -85,6 +85,7 @@ const attribution = computed(() =>
           v-if="entry.can_act_now"
           :entry="entry"
           :server-time="center.snapshot?.context.server_time" /><WorkIconButton
+          v-if="!sheet"
           :icon="X"
           label="关闭预览"
           @activate="$emit('close')"

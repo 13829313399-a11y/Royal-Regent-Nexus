@@ -1024,14 +1024,13 @@ describe('customer order center static frontend', () => {
     expect(viewSource).not.toContain('<span class="order-nexus">Nexus</span>')
   })
 
-  it('uses the Internal Quote Desk readability scale and responsive motion feedback', () => {
-    expect(workspaceSource).toContain('--order-motion-normal: 220ms')
-    expect(workspaceSource).toContain('font-size: 12px !important')
+  it('uses scoped motion tokens and reduced-motion feedback without fixed typography', () => {
+    expect(workspaceSource).toMatch(/--order-motion-normal:\s*[^;]+;/)
+    expect(workspaceSource).toContain('var(--order-motion-normal)')
     expect(workspaceSource).toContain('@keyframes order-rise-in')
     expect(workspaceSource).toContain('@keyframes order-drop-pulse')
     expect(workspaceSource).toContain('@media (prefers-reduced-motion: reduce)')
-    expect(read('src/styles/customer-order-center-shell.css')).toContain('font-size: 18px')
-    expect(read('src/styles/customer-order-center-shell.css')).toContain('font-size: 14px')
+    // Readable type, line wrapping and actual density are checked in browser/design review.
     expect(read('src/styles/customer-order-center-shell.css')).toContain('@keyframes order-main-enter')
   })
 

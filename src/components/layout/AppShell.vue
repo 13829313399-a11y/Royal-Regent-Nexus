@@ -23,10 +23,11 @@ provide(homeAppearanceKey, homeAppearance)
 const { effectiveMotion, density } = homeAppearance
 const standardSurface = ref<HTMLElement | null>(null)
 const fullPageSurface = ref<HTMLElement | null>(null)
-const { ghost } = useRouteMotionHost(homeAppearance, () => {
-  const host = isFullPage.value ? fullPageSurface.value : standardSurface.value
+const motionHost = ref<InstanceType<typeof RouteMotionHost> | null>(null)
+const { ghost, spatial } = useRouteMotionHost(homeAppearance, fullPage => {
+  const host = fullPage ? fullPageSurface.value : standardSurface.value
   return host?.firstElementChild instanceof HTMLElement ? host.firstElementChild : null
-})
+}, () => motionHost.value?.layer ?? null)
 const searchRequest = ref(0)
 provide(homeSearchKey, searchRequest)
 const topbarHeight = ref(72)
@@ -111,5 +112,5 @@ onBeforeUnmount(() => {
       </main>
     </div>
   </div>
-  <RouteMotionHost :ghost="ghost" />
+  <RouteMotionHost ref="motionHost" :ghost="ghost" :spatial="spatial" />
 </template>

@@ -50,12 +50,30 @@ async function page(){
   if(url.endsWith('/photos'))row.photos.push({id:'photo-'+row.photos.length,name:body.name});
   if(url.endsWith('/remove-photo'))row.photos=row.photos.filter(p=>p.id!==body.photoId);
   row.revision++;active--;
-  return {ok:true,json:async()=>copy(row)};
+  return {ok:true,json:async()=>url.endsWith('/photos')?{...copy(row),uploadedPhotoId:row.photos.at(-1).id}:copy(row)};
  };
  const schedule={};require('node:vm').runInNewContext(fs.readFileSync(path.join(sourceRoot,'services/qc-department/qc-schedule.js'),'utf8'),schedule);w.QcSchedule=schedule.QcSchedule;
  w.eval(fs.readFileSync(path.join(sourceRoot,'services/qc-department/qc-inspection-audit.js'),'utf8'));w.eval(fs.readFileSync(path.join(sourceRoot,'services/qc-department/qc-photo-paste.js'),'utf8'));w.eval(script);await tick();if(!w.QcInspectionSheet.model.loaded)await w.QcInspectionSheet.load();
  return {dom,w,d:w.document,calls,get rows(){return rows;},set fail(value){fail=value;},set delay(value){delay=value;},loseAnnotationResponse(){loseAnnotationResponse=true;},get maxActive(){return maxActive;}};
 }
+test('desktop opens the acknowledged first single or camera upload, but not a multi-file batch',async()=>{
+  const p=await page();try{
+    const {w,d}=p,opened=[];
+    d.getElementById('page-records').classList.add('active');
+    w.QcInspectionSummary={openPhoto:(row,photos,index)=>opened.push([row.entryId,photos[index].name])};
+    const upload=async(selector,names)=>{
+      const control=d.querySelector(selector);
+      Object.defineProperty(control,'files',{configurable:true,value:names.map(name=>new w.File(['photo'],name,{type:'image/png'}))});
+      await w.QcInspectionSheet.upload(control.dataset.files||control.dataset.camera,control);
+      await tick();
+    };
+    await upload('[data-files=a]',['first.png']);
+    await upload('[data-files=a]',['second.png']);
+    await upload('[data-files=b]',['batch-a.png','batch-b.png']);
+    await upload('[data-camera=a]',['camera.png']);
+    assert.deepEqual(opened,[['a','first.png'],['a','camera.png']]);
+  }finally{p.dom.window.close();}
+});
 test('18 business display columns without actual date or completion, inline four-result controls, reused remarks, real camera/file inputs and no drawer',async()=>{
  const p=await page();try{
   assert.equal(p.d.querySelectorAll('.qis-table thead th').length,18);

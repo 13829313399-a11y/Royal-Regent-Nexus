@@ -425,6 +425,39 @@ tbody tr:hover { background: var(--bg-hover); }
 }
 .action-btn:hover     { border-color: var(--accent-dim); color: var(--accent); }
 .action-btn.del:hover { border-color: var(--red);        color: var(--red); }
+.action-btn.qc-del-sep { margin-left: 8px; }
+.qc-delete-role-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid #f5c2c7;
+  background: #fff5f5;
+  color: #b42318;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+body.theme-dark .qc-delete-role-pill {
+  background: #3a191c;
+  border-color: #7f2a2a;
+  color: #fca5a5;
+}
+.qc-deflib-delete-hint {
+  margin-top: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid #f5d08a;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 12px;
+}
+body.theme-dark .qc-deflib-delete-hint {
+  background: #33270d;
+  border-color: #664d16;
+  color: #fcd34d;
+}
 
 /* ── TOOLBAR ── */
 .toolbar {

@@ -113,7 +113,7 @@ def report(factory, day, period='daily', customer='', *, workbook_preview=False)
                 scheduleCount=sum(row['dateSource'] == 'schedule' for row in rows))
 
 
-def workbook(report_data):
+def workbook(report_data, hidden_columns=()):
     package = Package(TEMPLATE.read_bytes())
     name = package.names()[0]
     sheet_name = '.'.join(str(int(part)) for part in report_data['date'][5:].split('-'))
@@ -166,6 +166,9 @@ def workbook(report_data):
                                  or cell.get('r').rstrip('0123456789') > get_column_letter(col)), len(target))
             target.insert(position, package.cell(target, col, value, style))
     _format_daily_sheet(package, sheet, sheet_rows, sheet_name, report_data)
+    for col in sheet.find(tag('cols')):
+        if int(col.get('min')) in hidden_columns:
+            col.set('hidden', '1')
     return package.finish()
 
 

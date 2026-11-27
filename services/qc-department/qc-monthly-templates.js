@@ -196,6 +196,7 @@
     view.innerHTML='<div class="qmt-heading"><h2>'+esc(spec.title)+'</h2></div><div class="qmt-controls"><button id="qmtRefresh" type="button" class="qc-refresh-icon" aria-label="刷新数据" title="刷新数据"></button></div><div class="qmt-status-line"><span id="qmtStatus" role="status" aria-live="polite"></span><button id="qmtRetry" hidden>重试保存</button></div><div id="qmtConflict"></div><div id="qmtTables"></div><div class="report-export-footer"><div id="qmtExcelStatus" class="qmt-muted" role="status" aria-live="polite"></div><button id="qmtExcel">导出 Excel</button></div>';
     el('qmtRefresh').onclick=()=>load();
     el('qmtExcel').onclick=exportExcel;
+    root.QcExportColumns.mount(el('qmtExcel'),designs[active]?active:'legacy');
     el('qmtRetry').onclick=retry;
     if(dirty()||!root.QcReportWorkbook?.mount('monthly',active,el('qmtTables'),data,()=>load()))renderTables();
     status();
@@ -318,11 +319,11 @@
     const versions=Object.fromEntries(Object.entries(data.fields).filter(([key])=>!customer||key===customer||(qualityView()&&key===data.overview?.metadataKey)).map(([key,cells])=>[key,Object.fromEntries(Object.entries(cells).map(([field,cell])=>[field,cell.version]))]));
     exporting=true;exportMessage='正在准备完整表格，请稍候…';status();
     try{
-      const payload={date:data.date,customer,template:active,sourceRevision:data.sourceRevision,versions};
+      const payload={date:data.date,customer,template:active,sourceRevision:data.sourceRevision,versions,hideEmptyCols:root.QcExportColumns.enabled(designs[active]?active:'legacy')};
       const result=await request('api/monthly-templates/excel',payload,120000);
       if(!/^api\/monthly-templates\/excel\/[a-zA-Z0-9.-]+$/.test(result.url))throw Error('下载地址无效，请重试');
-      const link=doc.createElement('a');link.href=result.url;link.download=result.filename;link.hidden=true;doc.body.append(link);link.click();link.remove();
-      exportMessage='已生成 '+result.filename+'，已发起下载。';
+      await root.QcExportColumns.downloadTicket(result);
+      exportMessage=root.QcExportColumns.message(payload.hideEmptyCols,result.hiddenColumns);
     }catch(e){exportMessage='Excel 导出失败：'+(e.message||'请重试');}
     finally{exporting=false;status();}
   }

@@ -31,6 +31,16 @@
     return image;
   }
 
+  // Overlap just the destination's first pose with its data query. The view
+  // still decides whether it has a successful empty result before mounting.
+  const firstPoses = new Map();
+  function prepare(scene) {
+    if (!Object.hasOwn(titles, scene) || firstPoses.has(scene) || navigator.connection?.saveData) return;
+    const image = loadFrame(scene, 'rest');
+    firstPoses.set(scene, image);
+    image.addEventListener('error', () => firstPoses.delete(scene), {once:true});
+  }
+
   class QcEmptyState extends HTMLElement {
     connectedCallback() {
       const scene = this.getAttribute('scene');
@@ -72,16 +82,16 @@
         const poses = scene === 'reports' ? ['action', 'middle'] : ['action'];
         const frames = poses.map(pose => loadFrame(scene, pose));
         motionModule ||= import(new URL('qc-empty-motion.js', script)).catch(() => null);
-        const [module] = await Promise.all([motionModule, rest.decode(), ...frames.map(image => image.decode())]);
+        await Promise.all([rest.decode(), ...frames.map(image => image.decode())]);
         if (signal.aborted || reducedMotion.matches) return;
         art.append(...frames);
         if (frames.length === 2) art.classList.add('has-middle');
 
         const canvas = document.createElement('canvas');
         art.append(canvas);
-        const renderer = module?.createClerkMotion(canvas, [rest, ...frames], scene);
-        let frameId;
+        let frameId, renderer, finished=false;
         const finish = () => {
+          finished=true;
           cancelAnimationFrame(frameId);
           art.classList.remove('is-warping');
           canvas.remove();
@@ -99,6 +109,10 @@
         reducedMotion.addEventListener('change', stopOnReducedMotion);
         art.addEventListener('animationend', finish, {once:true});
         art.classList.add('is-playing');
+        // The CSS pose transition can start even on a cold module request.
+        const module = await motionModule;
+        if (finished || signal.aborted || reducedMotion.matches) return;
+        renderer = module?.createClerkMotion(canvas, [rest, ...frames], scene);
         if (!renderer) return;
         const animation = art.getAnimations()[0];
         const draw = () => {
@@ -113,6 +127,6 @@
     }
   }
 
-  window.QcEmptyState = {markup};
+  window.QcEmptyState = {markup, prepare};
   customElements.define('qc-empty-state', QcEmptyState);
 })();

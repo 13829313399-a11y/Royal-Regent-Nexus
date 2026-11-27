@@ -102,15 +102,17 @@
     if(q('[data-close]'))q('[data-close]').onclick=close;el.onclose=close;
     if(!options.sharedCustomer) q('[data-customer]').onchange=()=>{options.onCustomerChange?.(customer());load();};q('[data-refresh]').onclick=()=>load();
     q('[data-prev]').onclick=()=>{page--;draw();};q('[data-next]').onclick=()=>{page++;draw();};
+    root.QcExportColumns.mount(q('[data-export]'),'issues');
     exportCurrent=q('[data-export]').onclick=async()=>{
       if(busy||!data?.total||!data.canExport)return;
       busy=true;options.onBusy?.(true);el.querySelectorAll('.qir-controls select,.qir-controls input,[data-refresh]').forEach(n=>n.disabled=true);draw();status.className='';status.textContent='正在生成 Excel…返回或关闭可取消等待';
       try{
-        const result=await request('api/issue-reports/excel',{period,date,customer:customer(),sourceRevision:data.sourceRevision,photoQuality:'preview',allowPreviewFallback:false});
+        const on=root.QcExportColumns.enabled('issues');
+        const result=await request('api/issue-reports/excel',{period,date,customer:customer(),sourceRevision:data.sourceRevision,photoQuality:'preview',allowPreviewFallback:false,hideEmptyCols:on});
         if(!el.isConnected)return;
         if(!/^api\/monthly-templates\/excel\/[a-zA-Z0-9.-]+$/.test(result.url))throw Error('下载地址无效');
-        const link=doc.createElement('a');link.href=result.url;link.download=result.filename;doc.body.append(link);link.click();link.remove();
-        status.textContent='已生成 '+result.filename;
+        if(!await root.QcExportColumns.downloadTicket(result,()=>el.isConnected))return;
+        status.textContent=root.QcExportColumns.message(on,result.hiddenColumns);
       }catch(e){if(el.isConnected){status.textContent=e.name==='AbortError'?'导出等待已取消或超时，可重试':e.message;status.className='qir-error';}}
       finally{busy=false;if(el.isConnected){options.onBusy?.(false);el.querySelectorAll('.qir-controls select,.qir-controls input,[data-refresh]').forEach(n=>n.disabled=false);draw();}}
     };

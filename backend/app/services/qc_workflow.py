@@ -1,5 +1,5 @@
 """QC execution tasks. Authoritative Sales rows are read-only; legacy QC stores are untouched."""
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
@@ -54,6 +54,12 @@ CREATE TABLE IF NOT EXISTS receipts (
 CREATE TABLE IF NOT EXISTS exports (
  id TEXT PRIMARY KEY, factory TEXT NOT NULL, actor TEXT NOT NULL,
  expires INTEGER NOT NULL, content BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS deleted_tasks (
+ id TEXT PRIMARY KEY, factory TEXT NOT NULL, source_id TEXT NOT NULL,
+ method TEXT NOT NULL, batch TEXT NOT NULL, payload TEXT NOT NULL,
+ events_json TEXT NOT NULL, deleted_at TEXT NOT NULL,
+ deleted_by TEXT NOT NULL, reason TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS deleted_task_files AS SELECT * FROM files WHERE 0;
 '''
 
 
@@ -156,9 +162,11 @@ def sources(db, factory):
     if journal.exists():
         with sqlite3.connect(journal.as_uri()+'?mode=ro',uri=True) as saved:
             if saved.execute("SELECT 1 FROM sqlite_master WHERE name='entry_details'").fetchone():
-                has_review='review_state' in {r[1] for r in saved.execute('PRAGMA table_info(entry_details)')}
+                cols={r[1] for r in saved.execute('PRAGMA table_info(entry_details)')}
+                has_review='review_state' in cols
                 field="d.review_state" if has_review else "''"
-                for base,result,state in saved.execute("SELECT e.base,e.result,"+field+" FROM entries e JOIN entry_details d ON e.id=d.entry_id WHERE e.factory=? AND d.submitted_at<>''",(factory,)):
+                not_deleted=" AND d.deleted_at=''" if 'deleted_at' in cols else ''
+                for base,result,state in saved.execute("SELECT e.base,e.result,"+field+" FROM entries e JOIN entry_details d ON e.id=d.entry_id WHERE e.factory=? AND d.submitted_at<>''"+not_deleted,(factory,)):
                     task_id=json.loads(base).get('workflowId');completed[task_id]=result
                     inline_states[task_id]='returned' if state=='returned_to_inspection' else state if state in {'pending','approved'} else 'completed'
     by_source = {}
@@ -380,14 +388,14 @@ def test_entry_allowed(factory, record):
         return False
     path = Path(settings.qc_department_data_dir).resolve() / '_workflow' / 'test-entry-allowlist.json'
     try:
-        grants = json.loads(path.read_text())
+        grants = json.loads(path.read_text(encoding='utf-8'))
         expected = grants.get(factory, {}).get(str(record['id']))
         return bool(expected) and expected == sha256(dump(record).encode()).hexdigest()
     except (OSError, ValueError, TypeError, KeyError, AttributeError):
         return False
 
 
-def create_entry(factory, body, actor, legacy=None, reference=False):
+def create_entry(factory, body, actor, legacy=None, reference=False, *, connection=None):
     expected = {'recordId'} if legacy is not None else {'requestKey','method','execution'}
     if set(body) != expected:
         raise HTTPException(422, '新增记录字段不正确')
@@ -409,7 +417,7 @@ def create_entry(factory, body, actor, legacy=None, reference=False):
     source={'id':identity,'kind':'legacy' if legacy is not None else 'manual','sourceRevision':1,'sourceVersion':1,
         'factory':factory,'sourceStatus':'active','customer':r.get('client',''),'poNo':r.get('orderNo',''),
         'customerPo':'','productNo':r.get('productNo',''),'productName':r.get('productName',''),'quantity':execution['actualQuantity']}
-    with store(True) as conn:
+    with (store(True) if connection is None else nullcontext(connection)) as conn:
         found=conn.execute('SELECT * FROM tasks WHERE factory=? AND source_id=?', (factory,identity)).fetchone()
         if found:
             previous=unpack(conn,found)
@@ -720,3 +728,23 @@ def create_schedule(factory, body, actor):
               'quantity':qty,'sourceKind':'manual-schedule','input':row,'completion':'未推送','tasks':[]}
         conn.execute('INSERT INTO manual_schedules VALUES(?,?,?,?,?,?)',(item['id'],factory,actor['id'],key,dump(item),now()))
         return item
+
+
+def archive_deleted_task(conn, factory, task_id, actor, reason):
+    """Use the sheet's attached workflow database and per-entry savepoint."""
+    if not task_id:
+        return False
+    row = conn.execute('SELECT * FROM qflow.tasks WHERE id=? AND factory=?', (task_id, factory)).fetchone()
+    if row is None:
+        return False
+    events = [dict(r) for r in conn.execute('SELECT * FROM qflow.events WHERE task_id=? ORDER BY id', (task_id,))]
+    conn.execute(
+        'INSERT INTO qflow.deleted_tasks VALUES(?,?,?,?,?,?,?,?,?,?)',
+        (row['id'], row['factory'], row['source_id'], row['method'], row['batch'],
+         row['payload'], dump(events), now(), dump(actor), reason),
+    )
+    conn.execute('INSERT INTO qflow.deleted_task_files SELECT * FROM qflow.files WHERE task_id=?', (task_id,))
+    conn.execute('DELETE FROM qflow.files WHERE task_id=?', (task_id,))
+    conn.execute('DELETE FROM qflow.events WHERE task_id=?', (task_id,))
+    conn.execute('DELETE FROM qflow.tasks WHERE id=? AND factory=?', (task_id, factory))
+    return True

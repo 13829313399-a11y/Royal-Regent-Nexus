@@ -7,6 +7,8 @@
 
 正单、样板单及杂单按厂共用台账。供应商送货与仓库实收分别留单，收货需记录实物数量和库位，改错走可追溯的更正或冲销。零价不能自行推定免费。月结使用已确认的价格与收发凭据，原始 Excel、箱唛版本及订单关联保留。
 
+东康 21 列导入模板的「备注1」依次列原采购单号、订单备注、工艺和该纸张的说明，去重并过滤送货补录时生成的提示。补换行附结算与送货引用。合并采购号放在「备注2」，生产备注和送货备注留空。
+
 基础资料的状态操作可对照[资料方案](../business/纸箱模块-基础资料建设方案.md)和[状态接口](../../backend/app/api/carton_materials.py)。旧仓库独立操作指引未找回。明细分为订单与收货、采购协同、基础资料与库存三册。
 
 [纸箱模块业务逻辑说明书.md](../business/纸箱模块业务逻辑说明书.md) · [carton_procurement.py](../../backend/app/api/carton_procurement.py) · [test_carton_procurement_api.py](../../backend/tests/test_carton_procurement_api.py)
@@ -22,6 +24,8 @@
 
 委外单区分厂欠、已送待点收、累计实收和仓内可领。实发原料扣对应批次，登记到货保留送达凭证，点收时才按实收量入账。各部门凭单领用已经点收的批次。持裁床系统申请时，仓管从原申请选择匹配的委外回仓批次发料，再由裁床签收。委外单按同一库存流水更新可领量，仓管只登记一次出库。委外单内手填部门领用适用于部门持纸单来领的场景。[委外收发规则](../business/warehouse-framework-reuse-plan.md#布料仓委外单) · [委外回归](../../backend/tests/test_fabric_subcontract.py)
 
+半成品仓从「订单管理 → 订单进度」按来源单号和行号登记已有放产明细，保留生产单、部位、布标、数量和单位。仓管按实际收货凭证入库，加工任务和批次关联同一放产明细，回仓和包装签收继承原发出单。工作看板可从待收货、加工在外、包装待签收和实收超计划打开对应明细或原单。[进度计算](../../backend/app/services/semi_order_progress.py)
+
 仓管从原出库退料、裁床查看回传已有旧交接记录。裁床主动申请后由仓库验收的双边退料、半成品跨仓回执、同一张真实订单的跨部门配料和岗位试走均须单独核实。[仓库交接与未决事项](../archive/warehouse/progress-20261118.md)
 
 [warehouse-framework-reuse-plan.md](../business/warehouse-framework-reuse-plan.md) · [warehouse_operations.py](../../backend/app/api/warehouse_operations.py) · [test_warehouse_operations.py](../../backend/tests/test_warehouse_operations.py)
@@ -32,6 +36,8 @@
 ## 华康 C 工程 BOM 与物料计划
 
 工程维护版本、来源、物料匹配与用量依据，业务确认订单需求，采购按批准来源办单。工程版本的审批和向裁床发布是两步。试算、候选匹配或旧表的示例系数不能直接变成正式采购数量。
+
+采购取整按已确认的需求 §6.4 执行，保留精确基本单位需求，完成损耗及有效供给抵扣后换算、汇总，再按采购单位向上取整数。§6.4.1 细化了换算字段、版本依据与示例。工程物料已支持可选采购单位换算，随物料审核版本和 BOM 快照冻结；新业务试算以精确分数汇总并显示含损耗毛需求的折合数量、整单位数量及差额。旧客户端遗漏字段保留原换算，旧回执及历史保持原结果。采购准备单的采购单位和拟订量由采购填写，正式净采购建议仍待供给资料接通。金蝶胶水样本的整千克进位触发配置尚待确认。
 
 恢复或切换须按版本核对原始行和单位。[工程审批检查](../business/huakang-c-engineering-bom-approval-check.md)与[物料计划流程](../business/huakang-c-material-plan-workflow.md)分别说明职责。
 

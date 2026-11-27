@@ -118,9 +118,11 @@ function _renderUserBadge() {
   const u = _liveUser();
   const el = document.getElementById('userBadge');
   if (!el || !u) return;
+  const hasDelete = Boolean(window.__QC_NEXUS?.deleteAllowed);
+  const pill = hasDelete ? '<span class="qc-delete-role-pill" title="该账号拥有 QC 数据删除权限">含删除权</span>' : '';
   el.innerHTML =
-    `<details class="qc-account"><summary><span class="user-badge-name">${_esc(u.name || u.username)}</span><span aria-hidden="true" class="qc-account-chevron">⌄</span></summary>` +
-    `<div class="qc-account-panel"><span>${_esc(u.name || u.username)}</span><small>Nexus 账号</small></div></details>`;
+    `<details class="qc-account"><summary><span class="user-badge-name">${_esc(u.name || u.username)}</span>${pill}<span aria-hidden="true" class="qc-account-chevron">⌄</span></summary>` +
+    `<div class="qc-account-panel"><span>${_esc(u.name || u.username)}</span><small>${hasDelete ? 'QC 数据删除管理员' : 'Nexus 账号'}</small></div></details>`;
 }
 
 /* ── 权限应用（按角色显示/隐藏按钮）── */
@@ -142,10 +144,13 @@ function applyPermissions() {
     el.style.display = canCreate ? '' : 'none';
   });
 
-  /* 批量删除区 */
+  /* 批量删除区及破坏性数据清理卡 */
   const canDel = can('deleteRecord');
   const batchDelWrap = document.getElementById('batchDelWrap');
   if (batchDelWrap) batchDelWrap.style.display = canDel ? '' : 'none';
+  document.querySelectorAll('#page-import .backup-card.red, #page-import .backup-card.yellow').forEach(el => {
+    el.style.display = canDel ? '' : 'none';
+  });
 
   /* 新增记录按钮（records 页）*/
   const addRecordBtn = document.getElementById('btnAddRecord');
@@ -414,7 +419,9 @@ function showPage(name, focusReportType = false) {
   if(workbook?.dirty||workbook?.busy){showToast('请先在工作簿中保存或放弃更改，再切换页面','error');return;}
   if(window.QcMonthlyTemplates?.navigationState().dirty){showToast('请先完成月报补充内容的保存或处理保存冲突','error');return;}
   if(window.QcWeeklyTemplates?.navigationState().dirty){showToast('请先完成周报补充内容的保存或处理保存冲突','error');return;}
-  if(window.QcInspectionSheet?.navigationState().dirty){if(!window.QcInspectionSheet.offerConflictRecovery?.())showToast('请先等待自动保存完成，或重试失败的内容后再切换页面','error');return;}
+  const inspection=window.QcInspectionSheet?.navigationState();
+  if(inspection?.busy){showToast('正在处理验货记录，请稍候再切换页面','error');return;}
+  if(inspection?.dirty){if(!window.QcInspectionSheet.offerConflictRecovery?.())showToast('请先等待自动保存完成，或重试失败的内容后再切换页面','error');return;}
   if (window.QcInspectionSummary?.busy) { showToast('历史导入正在保存，请稍候', 'warning'); return; }
   if (window.QcWorkflow?.navigationState().busy) { showToast('正在处理验货记录，请稍候再切换页面', 'error'); return; }
   if (name === 'report-center') name = reportCenterLandingPage() || name;
@@ -447,6 +454,9 @@ function showPage(name, focusReportType = false) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   const pg  = document.getElementById('page-' + name);
   const inReportCenter = REPORT_CENTER_PAGES.includes(name);
+  window.QcEmptyState?.prepare?.(inReportCenter ? 'reports' : {
+    'sales-schedule':'schedule', records:'inspection', review:'review', 'inspection-summary':'summary',
+  }[name]);
   const navPage = inReportCenter ? 'report-center' : name;
   const nav = document.querySelector(`.nav-item[data-page="${navPage}"]`);
   if (pg)  pg.classList.add('active');
@@ -1794,6 +1804,7 @@ function renderPartners(type) {
   if (!wrap) return;
   const label  = { supplier:'供应商名单', customer:'客户名单', processType:'加工类型名单' }[type] || type;
   const manage = canManagePartners();
+  const canDel = can('deleteRecord');
   const names  = managedNames(type);
   wrap.innerHTML = `<div style="flex:1;min-width:280px;border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--bg-card)">
     <div style="font-weight:600;margin-bottom:8px">${label} <span style="font-size:11px;color:var(--text-dim)">（${names.length} 个）</span></div>
@@ -1803,7 +1814,7 @@ function renderPartners(type) {
       <button class="btn-primary btn-sm" onclick="addPartner('${type}')">＋ 添加</button>
     </div>` : ''}
     <div style="max-height:480px;overflow-y:auto;display:flex;flex-wrap:wrap;gap:6px;align-content:flex-start">
-      ${names.length ? names.map(n => `<span class="badge badge-hold" style="display:inline-flex;align-items:center;gap:4px;padding:4px 8px">${_esc(n)}${manage ? `<button data-name="${_esc(n)}" onclick="delPartner('${type}', this.dataset.name)" style="border:none;background:none;color:var(--red);cursor:pointer;padding:0;font-size:12px;line-height:1" title="从名单删除">✕</button>` : ''}</span>`).join('') : '<span style="color:var(--text-muted);font-size:12px">暂无，请在上方添加</span>'}
+      ${names.length ? names.map(n => `<span class="badge badge-hold" style="display:inline-flex;align-items:center;gap:4px;padding:4px 8px">${_esc(n)}${canDel ? `<button data-name="${_esc(n)}" onclick="delPartner('${type}', this.dataset.name)" style="border:none;background:none;color:var(--red);cursor:pointer;padding:0;font-size:12px;line-height:1" title="从名单删除">✕</button>` : ''}</span>`).join('') : '<span style="color:var(--text-muted);font-size:12px">暂无，请在上方添加</span>'}
     </div>
   </div>`;
   renderPartnerCards(type);
@@ -1847,7 +1858,33 @@ function setPartnerTab(tab) {
   });
 }
 
-function addPartner(type) {
+const _catalogCacheFailures = new Set();
+
+async function _saveNexusCatalog(save, list, storageKey, fallbackMessage) {
+  if (_catalogCacheFailures.has(storageKey)) {
+    showToast('请刷新后再继续保存名单', 'error');
+    return false;
+  }
+  if (typeof save !== 'function') {
+    showToast('尚未连接服务器，请刷新后重试', 'error');
+    return false;
+  }
+  const res = await save(list);
+  if (!res.ok) {
+    showToast(res.detail || fallbackMessage, 'error');
+    return false;
+  }
+  try {
+    sessionStorage.setItem(storageKey, JSON.stringify(list));
+  } catch (error) {
+    _catalogCacheFailures.add(storageKey);
+    showToast('名单已保存，请刷新后继续操作', 'error');
+    return false;
+  }
+  return true;
+}
+
+async function addPartner(type) {
   if (!canManagePartners()) { showToast('当前账号无权限执行此操作', 'error'); return; }
   const label = { supplier:'供应商', customer:'客户', processType:'加工类型' }[type] || type;
   const inp   = document.getElementById('partnerInput_' + type);
@@ -1857,8 +1894,13 @@ function addPartner(type) {
   if (known.includes(name)) { showToast(label + '「' + name + '」已在名单中', 'info'); return; }
   const list = _loadPartners().slice();
   list.push({ name, type, createdAt: nowIso() });
-  _savePartners(list);
-  if (inp) inp.value = '';
+  if (window.__QC_NEXUS) {
+    if (!await _saveNexusCatalog(window.__QC_SAVE_PARTNERS, list, STORAGE_KEYS.partners, '保存失败，请刷新后重试')) return;
+    _partners = list;
+  } else {
+    _savePartners(list);
+  }
+  if (inp?.value.trim() === name) inp.value = '';
   renderPartners(type);
   renderSupplierDatalist();
   renderCustomerDatalist();
@@ -1867,11 +1909,17 @@ function addPartner(type) {
   showToast(label + '「' + name + '」已添加 ✓', 'success');
 }
 
-function delPartner(type, name) {
-  if (!canManagePartners()) { showToast('当前账号无权限执行此操作', 'error'); return; }
+async function delPartner(type, name) {
+  if (!can('deleteRecord')) { showToast('当前账号无删除权限', 'error'); return; }
   const label = { supplier:'供应商', customer:'客户', processType:'加工类型' }[type] || type;
   if (!confirm('确认从名单删除' + label + '「' + name + '」？\n（不影响已有的验货记录；若历史记录里用过该名称，下拉候选中仍可能出现）')) return;
-  _savePartners(_loadPartners().filter(p => !(p.type === type && p.name === name)));
+  const nextList = _loadPartners().filter(p => !(p.type === type && p.name === name));
+  if (window.__QC_NEXUS) {
+    if (!await _saveNexusCatalog(window.__QC_SAVE_PARTNERS, nextList, STORAGE_KEYS.partners, '删除失败，当前账号可能无删除权限')) return;
+    _partners = nextList;
+  } else {
+    _savePartners(nextList);
+  }
   renderPartners(type);
   renderSupplierDatalist();
   renderCustomerDatalist();
@@ -2949,7 +2997,7 @@ function _saveDefectLib(lib) {
 
 /* 首次启动初始化 */
 function initDefectLib() {
-  if (!_getDefectLib()) _saveDefectLib(_DEFAULT_DEFECT_LIB);
+  if (!window.__QC_NEXUS && !_getDefectLib()) _saveDefectLib(_DEFAULT_DEFECT_LIB);
 }
 
 /* 获取启用的条目 */
@@ -3013,11 +3061,22 @@ function _checkUnknownDefects(validDefects) {
 ${unknown.map(u=>`「${u}」`).join('、')}
 是否将其加入内容库？`;
   if (confirm(msg)) {
-    unknown.forEach(u => {
-      const row = validDefects.find(d=>d.desc===u);
-      addToDefectLib(u, row?.category, row?.level);
-    });
-    showToast('✓ 新描述已加入内容库', 'success');
+    if (window.__QC_NEXUS) {
+      const nextLib = [...lib];
+      for (const name of new Set(unknown)) {
+        const row = validDefects.find(d => d.desc === name);
+        nextLib.push({ name, category: row?.category || '外观/质量', defaultLevel: row?.level || 'MIN 2.5',
+                       keywords: [], enabled: true, createdAt: new Date().toISOString().slice(0,10) });
+      }
+      void _saveNexusCatalog(window.__QC_SAVE_DEFECTS, nextLib, _DEFECT_LIB_KEY, '保存失败，请刷新后重试')
+        .then(saved => { if (saved) showToast('✓ 新描述已加入内容库', 'success'); });
+    } else {
+      unknown.forEach(u => {
+        const row = validDefects.find(d=>d.desc===u);
+        addToDefectLib(u, row?.category, row?.level);
+      });
+      showToast('✓ 新描述已加入内容库', 'success');
+    }
   }
   return true; /* 无论用户选择与否，都允许保存 */
 }
@@ -3542,11 +3601,12 @@ function renderDefectLibPage() {
     <input id="defLibSearch" type="search" aria-label="搜索描述或关键词" placeholder="描述或关键词" class="form-input"/>
     ${canAdd ? '<button class="btn-primary" onclick="_openDefLibModal()">＋ 新增描述</button>' : ''}
   </div>
+  ${canDel ? '<div class="qc-deflib-delete-hint">已被历史验货引用的词条受保护无法删除，请改用「停用」以保留历史追溯。</div>' : ''}
   <div class="table-wrap" style="margin-top:8px">
     <table style="table-layout:fixed;width:100%">
       <colgroup>
         <col style="width:110px"/><col style="width:90px"/><col style="width:100px"/>
-        <col style="width:auto"/><col style="width:70px"/><col style="width:170px"/>
+        <col style="width:auto"/><col style="width:70px"/><col style="width:${canDel ? 210 : 170}px"/>
       </colgroup>
       <thead><tr>
         <th style="text-align:left">描述名称</th>
@@ -3613,7 +3673,7 @@ function renderDefectLibPage() {
         <td style="text-align:center">
           ${canAdd ? `<button class="action-btn" onclick="_openDefLibModal(${realIdx})">编辑</button>` : ''}
           ${canAdd ? `<button class="action-btn" onclick="_toggleDefLibItem(${realIdx})">${d.enabled?'停用':'启用'}</button>` : ''}
-          ${canDel ? `<button class="action-btn del" onclick="_deleteDefLibItem(${realIdx})">删除</button>` : ''}
+          ${canDel ? `<button class="action-btn del qc-del-sep" onclick="_deleteDefLibItem(${realIdx})">删除描述</button>` : ''}
         </td>
       </tr>`;
     }).join('');
@@ -3625,10 +3685,24 @@ function renderDefectLibPage() {
 }
 
 let _editingDefLibIdx = null;
+let _editingDefLibItem = null;
+let _defLibEditGeneration = 0;
+let _defLibListNeedsRefresh = false;
+
+function _refreshSavedDefectLib() {
+  if (document.getElementById('defLibModal')?.style.display === 'flex') {
+    _defLibListNeedsRefresh = true;
+  } else {
+    renderDefectLibPage();
+  }
+  refreshDefectDescDatalist();
+}
 
 function _openDefLibModal(idx) {
   if (!can('manageDefectLib')) { showToast('当前账号无权限管理不良描述库', 'error'); return; }
+  _defLibEditGeneration++;
   _editingDefLibIdx = idx ?? null;
+  _editingDefLibItem = null;
   const modal = document.getElementById('defLibModal');
   if (!modal) return;
   modal.style.display = 'flex';
@@ -3639,6 +3713,7 @@ function _openDefLibModal(idx) {
   if (idx !== undefined && idx !== null) {
     const d = lib[idx];
     if (!d) return;
+    _editingDefLibItem = d;
     if (titleEl) titleEl.textContent = `编辑：${d.name}`;
     document.getElementById('dlName').value    = d.name;
     document.getElementById('dlCat').value     = d.category || '外观/质量';
@@ -3654,12 +3729,18 @@ function _openDefLibModal(idx) {
 }
 
 function _closeDefLibModal() {
+  _defLibEditGeneration++;
   const modal = document.getElementById('defLibModal');
   if (modal) modal.style.display = 'none';
   _editingDefLibIdx = null;
+  _editingDefLibItem = null;
+  if (_defLibListNeedsRefresh) {
+    _defLibListNeedsRefresh = false;
+    renderDefectLibPage();
+  }
 }
 
-function _saveDefLibItem() {
+async function _saveDefLibItem() {
   if (!can('manageDefectLib')) { showToast('当前账号无权限管理不良描述库', 'error'); return; }
   const errEl = document.getElementById('defLibModalErr');
   const show  = msg => { if(errEl){errEl.textContent=msg;errEl.style.display='';} };
@@ -3670,40 +3751,66 @@ function _saveDefLibItem() {
   if (!name) { show('请输入描述名称'); return; }
 
   const lib = _getDefectLib() || [];
-  if (_editingDefLibIdx !== null) {
-    lib[_editingDefLibIdx] = { ...lib[_editingDefLibIdx], name, category, defaultLevel:level, keywords:kw };
+  let editIndex = _editingDefLibIdx;
+  if (editIndex !== null) {
+    const original = JSON.stringify(_editingDefLibItem);
+    if (window.__QC_NEXUS && JSON.stringify(lib[editIndex]) !== original) {
+      const matches = lib.flatMap((entry, i) => JSON.stringify(entry) === original ? [i] : []);
+      if (matches.length !== 1) { showToast('名单已更新，请刷新后重试', 'error'); return; }
+      editIndex = matches[0];
+    }
+    lib[editIndex] = { ...lib[editIndex], name, category, defaultLevel:level, keywords:kw };
   } else {
     if (lib.find(d=>d.name===name)) { show('描述名称已存在'); return; }
     lib.push({ name, category, defaultLevel:level, keywords:kw, enabled:true, createdAt:new Date().toISOString().slice(0,10) });
   }
-  _saveDefectLib(lib);
-  _closeDefLibModal();
+  if (window.__QC_NEXUS) {
+    const generation = _defLibEditGeneration;
+    const fields = ['dlName', 'dlCat', 'dlLvl', 'dlKeywords'].map(id => document.getElementById(id));
+    const inputs = fields.map(field => field?.value);
+    if (!await _saveNexusCatalog(window.__QC_SAVE_DEFECTS, lib, _DEFECT_LIB_KEY, '保存失败，请刷新后重试')) return;
+    if (generation === _defLibEditGeneration) {
+      if (editIndex !== null) {
+        _editingDefLibIdx = editIndex;
+        _editingDefLibItem = lib[editIndex];
+      }
+      if (fields.every((field, i) => field?.value === inputs[i])) _closeDefLibModal();
+    }
+  } else {
+    _saveDefectLib(lib);
+    _closeDefLibModal();
+  }
   showToast('✓ 已保存', 'success');
-  renderDefectLibPage();
-  refreshDefectDescDatalist();
+  _refreshSavedDefectLib();
 }
 
-function _toggleDefLibItem(idx) {
+async function _toggleDefLibItem(idx) {
   if (!can('manageDefectLib')) { showToast('当前账号无权限管理不良描述库', 'error'); return; }
   const lib = _getDefectLib() || [];
   if (!lib[idx]) return;
   lib[idx].enabled = !lib[idx].enabled;
-  _saveDefectLib(lib);
-  renderDefectLibPage();
-  refreshDefectDescDatalist();
+  if (window.__QC_NEXUS) {
+    if (!await _saveNexusCatalog(window.__QC_SAVE_DEFECTS, lib, _DEFECT_LIB_KEY, '保存失败，请刷新后重试')) return;
+  } else {
+    _saveDefectLib(lib);
+  }
+  _refreshSavedDefectLib();
   showToast(lib[idx].enabled ? '✓ 已启用' : '已停用', lib[idx].enabled?'success':'info');
 }
 
-function _deleteDefLibItem(idx) {
-  if (!can('deleteRecord')) { showToast('当前账号无权限执行此操作','error'); return; }
+async function _deleteDefLibItem(idx) {
+  if (!can('deleteRecord')) { showToast('当前账号无删除权限','error'); return; }
   const lib = _getDefectLib() || [];
   if (!lib[idx]) return;
-  if (!confirm(`确认删除「${lib[idx].name}」？`)) return;
-  lib.splice(idx, 1);
-  _saveDefectLib(lib);
-  renderDefectLibPage();
-  refreshDefectDescDatalist();
-  showToast('✓ 已删除', 'success');
+  if (!confirm(`确认删除不良描述「${lib[idx].name}」？\n若该词条已被历史验货引用，系统将拦截并提示改用「停用」。`)) return;
+  const nextLib = lib.filter((_, i) => i !== idx);
+  if (window.__QC_NEXUS) {
+    if (!await _saveNexusCatalog(window.__QC_SAVE_DEFECTS, nextLib, _DEFECT_LIB_KEY, '删除失败，如已被历史引用请改用「停用」')) return;
+  } else {
+    _saveDefectLib(nextLib);
+  }
+  _refreshSavedDefectLib();
+  showToast('✓ 已删除描述', 'success');
 }
 
 /* ════════════════════════════════════════
@@ -5095,6 +5202,7 @@ function _backupValidate(parsed) {
    ③ 清空所有数据
 ════════════════ */
 function backupClearAll() {
+  if (typeof can === 'function' && !can('deleteRecord')) { showToast('当前账号无删除权限', 'error'); return; }
   _backupConfirm({
     icon:         '⊗',
     title:        '清空当前数据',

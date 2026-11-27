@@ -75,7 +75,7 @@
       {
         "path": "src/features/identity-management/PositionWorkbench.vue",
         "symbol": "async function selectPerson",
-        "sha256": "1c496d85395dc1397813e8ed053e2f1b1b5a4986bddce8c245ab1670d4a5d012"
+        "sha256": "551e83f5d703a882c3c903577a78379e1a7db9c410baebcb3815ca0fef4f2349"
       },
       {
         "path": "src/components/iam/workspace/iam-navigation.ts",

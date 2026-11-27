@@ -17,12 +17,13 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db import get_db
 from app.models.auth import AuthUser
-from app.services.auth import AuthContext, can, get_current_user
+from app.services.auth import AuthContext, can, get_current_user, has_permission_in_scope
 from app.api.qc_inspection import _ensure_permission
 from app.services import qc_workflow, qc_inspection_sheet, qc_inspection_summary, qc_approved_statistics, qc_daily_report, qc_weekly_templates
 from starlette.concurrency import run_in_threadpool
 from app.services import qc_weekly_excel, qc_monthly_templates, qc_monthly_excel
 from app.services.qc_approved_statistics import factory_label
+from app.services import qc_report_empty_cols as empty_cols
 from urllib.parse import quote
 
 router = APIRouter(prefix="/api/qc-department", tags=["qc-department"])
@@ -42,8 +43,8 @@ STATIC_FILES = {
     *EMPTY_ART_FILES,
     "qc-select.js", "qc-select.css",
     "qc-empty-state.js", "qc-empty-state.css", "qc-empty-motion.js",
-    "qc-mobile-entry.js", "qc-mobile-entry.css", "qc-photo-shapes.js",
-    "qc-report-workbook.js", "qc-report-workbook.css", "qc-review-workbook.js",
+    "qc-mobile-entry.js", "qc-mobile-entry.css", "qc-photo-shapes.js", "qc-glass-guide.js", "qc-glass-guide.css",
+    "qc-export-columns.js", "qc-report-workbook.js", "qc-report-workbook.css", "qc-review-workbook.js",
     "qc-daily-report.js", "qc-daily-report.css",
     "qc-weekly-templates.js", "qc-weekly-templates.css",
     "qc-monthly-templates.js", "qc-monthly-templates.css", "qc-issue-reports.js", "qc-issue-reports.css",
@@ -127,19 +128,23 @@ def ui_context(user: AuthContext, factory_id: str) -> dict:
     allowed = lambda p: can(user, "qc_inspection:" + p, factory_id, "qc")
     write = allowed("result_write") and allowed("order_write")
     manage, export = allowed("customer_manage"), allowed("report_export")
+    record_delete = allowed("record_delete")
     menus = ["dashboard", "sales-schedule", "records", "review", "inspection-summary", "analysis", "suppliers",
              "daily", "weekly", "monthly", "yearly", "supplier-report", "defectlib", "import"]
     perms = {key: {"v": 1, "e": 0, "a": 0, "m": 0} for key in menus}
     for key in ("records", "review"):
-        perms[key].update(e=int(write), a=int(write), m=int(write and manage))
+        perms[key].update(e=int(write), a=int(write), m=int(record_delete))
     for key in ("suppliers", "defectlib"):
         perms[key].update(e=int(manage), a=int(manage), m=int(manage))
     perms["review"]["a"] = int(allowed("review"))
-    perms["import"] = dict(v=int(write and manage), e=0, a=0, m=int(write and manage))
+    perms["import"] = dict(v=int(write and manage), e=0, a=0, m=int(record_delete))
     return {"factory": factory_id, "company": COMPANIES[factory_id], "factoryLabel": factory_label(factory_id), "exportAllowed": export, "summaryImportAllowed": allowed("result_write") and manage and export,
             "weeklyTemplatesEditAllowed": allowed("result_write"),
+            "deleteAllowed": record_delete,
             "workflow": {"create": allowed("schedule_write") and allowed("order_write"), "edit": allowed("result_write"),
-                         "review": allowed("review"), "export": export, "manual": write},
+                         "review": allowed("review"),
+                         "reviewReads": has_permission_in_scope(user, "qc_inspection:result_write", factory_id, "qc"),
+                         "export": export, "manual": write, "delete": record_delete},
             "inspector": {"id": user.id, "name": user.display_name or user.username},
             "user": {"username": "nexus:" + user.id, "name": user.display_name or user.username,
                      "role": "viewer", "enabled": True, "perms": perms}}
@@ -156,6 +161,10 @@ async def upstream(method: str, path: str, params: list, body: bytes) -> httpx.R
                 headers={"X-QC-Gateway-Token": token, "Content-Type": "application/json"})
     except httpx.HTTPError as exc:
         raise HTTPException(503, "QC 服务暂时不可用，请稍后重试") from exc
+
+
+def _legacy_status(record: dict) -> str:
+    return str(record.get("status") or "").strip() or "approved"
 
 
 @router.api_route("/{factory_id}/{asset_path:path}", methods=["GET", "HEAD", "POST"])
@@ -208,6 +217,23 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         return JSONResponse(qc_schedule_view.listing(db, factory_id,
             date_from=request.query_params.get('dateFrom', ''),
             date_to=request.query_params.get('dateTo', '')), headers=NO_CACHE)
+    if request.method == 'GET' and asset_path in {
+        'api/daily-report', 'api/weekly-templates', 'api/monthly-templates',
+        'api/issue-reports', 'api/approved-statistics/report',
+    }:
+        from app.services.qc_report_workbook import warm_on_report_visit
+        warm_on_report_visit()
+    if asset_path == 'api/report-workbook/photo':
+        if request.method not in {'GET', 'HEAD'}:
+            raise HTTPException(405, '报表照片仅供读取')
+        params = request.query_params
+        if (set(params) != {'entry', 'revision', 'photo'} or any(len(params.getlist(k)) != 1 for k in params)
+                or not re.fullmatch(r'[0-9]{1,18}', params['revision'])):
+            raise HTTPException(422, '报表照片参数不正确')
+        content, mime = await run_in_threadpool(qc_monthly_excel.approved_photo, factory_id,
+            params['entry'], int(params['revision']), params['photo'])
+        return Response(content if request.method == 'GET' else b'', media_type=mime,
+                        headers={**NO_CACHE, 'Content-Length': str(len(content))})
     if asset_path in {'api/report-workbook', 'api/report-workbook/save'}:
         from app.services import qc_report_workbook
         params = request.query_params
@@ -220,7 +246,10 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         if asset_path == 'api/report-workbook' and request.method in {'GET', 'HEAD'}:
             result = await run_in_threadpool(qc_report_workbook.preview, *scope,
                 can(user, 'qc_inspection:result_write', factory_id, 'qc'), params.get('result', 'FAIL'))
-            return Response(status_code=204, headers=NO_CACHE) if request.method == 'HEAD' else JSONResponse(result, headers=NO_CACHE)
+            if request.method == 'HEAD':
+                return Response(status_code=204, headers=NO_CACHE)
+            return await run_in_threadpool(qc_report_workbook.preview_response, result,
+                                           request.headers.get('accept-encoding', ''), NO_CACHE)
         if asset_path != 'api/report-workbook/save' or request.method != 'POST':
             raise HTTPException(405, '不支持此操作')
         _ensure_permission(db, user, 'qc_inspection:result_write', factory_id)
@@ -243,6 +272,10 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
     if asset_path in {"api/daily-report", "api/daily-report/export"} and request.method == "GET":
         exporting = asset_path.endswith("/export")
         keys = {"date", "revision"} if exporting else {"date"}
+        if exporting and "hideEmptyCols" in request.query_params:
+            keys.add("hideEmptyCols")
+            if request.query_params["hideEmptyCols"] not in {"0", "1"}:
+                raise HTTPException(422, "hideEmptyCols 仅接受 0 或 1")
         if "customer" in request.query_params:
             keys.add("customer")
         if "period" in request.query_params:
@@ -256,10 +289,12 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
             return JSONResponse(report, headers=NO_CACHE)
         if request.query_params["revision"] != report["revision"] or not report["total"]:
             raise HTTPException(409, "日报记录已变化或为空，请重新读取后导出")
-        content = await run_in_threadpool(qc_daily_report.workbook, report)
+        columns = empty_cols.hidden('daily', report['rows']) if request.query_params.get("hideEmptyCols") == "1" else []
+        content = await run_in_threadpool(qc_daily_report.workbook, report, columns)
         label = {"daily": "每日", "weekly": "每周", "monthly": "每月"}[report["period"]]
         name = quote(f"{label}验货情况统计表_{report['dateFrom']}_{report['dateTo']}.xlsx", safe="")
         return Response(content, media_type=qc_inspection_sheet.MIME, headers={**NO_CACHE,
+            "X-QC-Hidden-Columns": quote(json.dumps([report['headers'][i-1] for i in columns], ensure_ascii=False), safe=''),
             "Content-Disposition": "attachment; filename=QC-daily.xlsx; filename*=UTF-8''" + name})
     if asset_path in {"api/issue-reports", "api/issue-reports/excel"}:
         return await issue_reports_request(asset_path, request, db, user, factory_id)
@@ -272,6 +307,9 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
             raise HTTPException(405, "年报只支持下载")
         _ensure_permission(db, user, "qc_inspection:report_export", factory_id)
         args = dict(request.query_params)
+        if "hideEmptyCols" in args:
+            if len(request.query_params.getlist("hideEmptyCols")) != 1 or args.pop("hideEmptyCols") not in ("0", "1"):
+                raise HTTPException(422, "hideEmptyCols 仅接受 0 或 1")
         if (set(args) != {"year", "customer", "result", "revision"} or not args["year"]
                 or any(len(request.query_params.getlist(k)) != 1 for k in args)):
             raise HTTPException(422, "年报导出参数不正确")
@@ -333,6 +371,7 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
             _ensure_permission(db, user, "qc_inspection:order_write", factory_id)
         if asset_path in {"api/records/delete", "api/records/replace", "api/reference-data/clear"}:
             _ensure_permission(db, user, "qc_inspection:customer_manage", factory_id)
+            _ensure_permission(db, user, "qc_inspection:record_delete", factory_id)
     elif request.method not in {"GET", "HEAD"} or asset_path not in READ_ENDPOINTS:
         raise HTTPException(404, "接口不存在")
     if asset_path.startswith("api/export/"):
@@ -342,13 +381,25 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         body.extend(chunk)
         if len(body) > 32 * 1024 * 1024:
             raise HTTPException(413, "提交内容超过 32 MB")
-    if asset_path in {"api/records", "api/records/replace"} and request.method == "POST":
+    legacy_write = request.method == "POST" and asset_path in WRITE_PERMISSIONS and asset_path != "api/ai/ocr-extract"
+    removed_keys = []
+    if legacy_write:
         try:
             payload = json.loads(body)
             if not isinstance(payload, dict):
                 raise ValueError()
         except (ValueError, TypeError):
             raise HTTPException(400, "无效 JSON")
+    if asset_path in {"api/records", "api/records/replace"} and request.method == "POST":
+        if payload.get("deletedIds"):
+            _ensure_permission(db, user, "qc_inspection:record_delete", factory_id)
+            _ensure_permission(db, user, "qc_inspection:customer_manage", factory_id)
+        if not isinstance(payload.get("deletedIds", []), list) or any(
+            type(val) is not int or not 0 < val <= 9007199254740991 for val in payload.get("deletedIds", [])
+        ):
+            raise HTTPException(422, "删除编号必须为正整数")
+        if not isinstance(payload.get("records", [] if asset_path == "api/records" else None), list):
+            raise HTTPException(422, "缺少有效的记录列表")
         if payload.get('records'):
             existing_response = await upstream('GET','api/bootstrap',[('company',company)],b'')
             if existing_response.status_code != 200: raise HTTPException(503,'无法核对历史记录锁定状态')
@@ -360,26 +411,83 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
                 if prev and r.get('qc', '') != prev.get('qc', ''):
                     raise HTTPException(409, '检验员由登录账号绑定，不能手动修改')
                 if not prev: r['qc'] = user.display_name or user.username
-                if prev and r.get('status','approved') != prev.get('status','approved'):
+                if prev and _legacy_status(r) != _legacy_status(prev):
                     raise HTTPException(409,'请通过审核中心或验货表单变更状态')
-                if prev and prev.get('status','approved') in {'pending','approved'} and r != prev:
+                if (asset_path == 'api/records' and prev
+                        and _legacy_status(prev) in {'pending','approved'} and r != prev):
                     raise HTTPException(409,'已提交记录锁定，请由主管退回后修改')
         links = qc_workflow.legacy_links(factory_id)
         if set(payload.get("deletedIds", [])) & set(links):
             raise HTTPException(409, "记录已进入验货修订流程，不能通过历史同步删除")
         if links:
             payload['records'] = [r for r in payload.get('records', []) if r.get('id') not in links]
-            body = bytearray(json.dumps(payload).encode())
-        body = bytearray(json.dumps(payload).encode())
-        if payload.get("deletedIds"):
-            _ensure_permission(db, user, "qc_inspection:customer_manage", factory_id)
+    if asset_path in {"api/defects", "api/partners"} and request.method == "POST":
+        key = "defectLib" if asset_path == "api/defects" else "partners"
+        if "baseRevision" in payload and not (
+            type(payload["baseRevision"]) is int and 0 <= payload["baseRevision"] <= 9007199254740991
+        ):
+            raise HTTPException(422, "名单版本必须为非负整数")
+        if not isinstance(payload.get(key), list) or any(
+            not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"].strip()
+            for item in payload[key]
+        ):
+            raise HTTPException(422, "请提交完整有效的名单")
+        existing_response = await upstream("GET", "api/bootstrap", [("company", company)], b"")
+        if existing_response.status_code != 200:
+            raise HTTPException(503, "无法核对现有配置，请重试")
+        existing_data = existing_response.json()
+        current_revision = (existing_data.get("catalogVersions") or {}).get(key)
+        if "baseRevision" in payload and current_revision is not None and payload["baseRevision"] != current_revision:
+            raise HTTPException(409, "名单已在其他窗口更新，请刷新后重试")
+        if asset_path == "api/defects" and isinstance(payload.get("defectLib"), list):
+            existing_defects = existing_data.get("defectLib") or []
+            old_names = {str(d.get("name") or "").strip() for d in existing_defects if isinstance(d, dict) and str(d.get("name") or "").strip()}
+            new_names = {str(d.get("name") or "").strip() for d in payload["defectLib"] if isinstance(d, dict) and str(d.get("name") or "").strip()}
+            removed_names = old_names - new_names
+            if removed_names:
+                _ensure_permission(db, user, "qc_inspection:record_delete", factory_id)
+                removed_keys = [[name] for name in removed_names]
+                referenced = await run_in_threadpool(qc_inspection_sheet.referenced_defect_names, factory_id)
+                for rec in existing_data.get("records") or []:
+                    if not isinstance(rec, dict):
+                        continue
+                    for item in rec.get("defects") or []:
+                        if isinstance(item, dict):
+                            desc = str(item.get("desc") or "").strip()
+                            if desc:
+                                referenced.add(desc)
+                    raw_defect = str(rec.get("defect") or "").strip()
+                    if raw_defect:
+                        referenced.add(raw_defect)
+                        for token in re.split(r"[，,;；、/\n]+", raw_defect):
+                            cleaned = token.strip()
+                            if cleaned:
+                                referenced.add(cleaned)
+                blocked = sorted(removed_names & referenced)
+                if blocked:
+                    raise HTTPException(409, f"不良描述「{'、'.join(blocked[:3])}」已被历史验货记录引用，无法删除；请改用「停用」以保留历史追溯")
+        if asset_path == "api/partners" and isinstance(payload.get("partners"), list):
+            existing_partners = existing_data.get("partners") or []
+            old_pairs = {(str(p.get("type") or "").strip(), str(p.get("name") or "").strip()) for p in existing_partners if isinstance(p, dict) and str(p.get("name") or "").strip()}
+            new_pairs = {(str(p.get("type") or "").strip(), str(p.get("name") or "").strip()) for p in payload["partners"] if isinstance(p, dict) and str(p.get("name") or "").strip()}
+            if old_pairs - new_pairs:
+                _ensure_permission(db, user, "qc_inspection:record_delete", factory_id)
+                removed_keys = [list(pair) for pair in old_pairs - new_pairs]
     if asset_path == 'api/records/delete' and request.method == 'POST':
-        try: deleting=json.loads(body).get('ids',[])
-        except (ValueError,AttributeError): raise HTTPException(400,'无效 JSON')
+        deleting = payload.get('ids', [])
+        if not isinstance(deleting, list) or any(type(i) is not int or not 0 < i <= 9007199254740991 for i in deleting):
+            raise HTTPException(422, '删除编号必须为正整数')
         if set(deleting) & set(qc_workflow.legacy_links(factory_id)): raise HTTPException(409,'修订中的历史记录不能删除')
     if asset_path == 'api/records/replace' and request.method == 'POST' and qc_workflow.legacy_links(factory_id):
         raise HTTPException(409, '已有历史记录进入验货修订流程，不能批量清除或替换历史库')
-    params = [(k, v) for k, v in request.query_params.multi_items() if k != "company"]
+    if legacy_write:
+        payload["_qc"] = {"actor": user.id, "removed": removed_keys}
+        if asset_path in {"api/defects", "api/partners"} and "baseRevision" in payload:
+            payload["_qc"]["baseRevision"] = payload["baseRevision"]
+        if asset_path in {"api/records/delete", "api/records/replace", "api/reference-data/clear"} or payload.get("deletedIds"):
+            payload["_qc"]["protectedIds"] = await run_in_threadpool(qc_inspection_sheet.submitted_legacy_ids, factory_id)
+        body = json.dumps(payload).encode()
+    params = [(k, v) for k, v in request.query_params.multi_items() if k not in {"company", "sheetVersions"}]
     params.append(("company", company))
     export_records = qc_workflow.ledger_records(db, factory_id) if asset_path.startswith('api/export/') else []
     plan_export = asset_path.startswith('api/export/') and request.query_params.get('dateBasis') == 'inspection-plan'
@@ -397,6 +505,9 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         payload = result.json()
         # An older private service may still return its legacy account data.
         payload.pop("users", None)
+        payload.pop("recordVersions", None)
+        payload.pop("recordGenerations", None)
+        payload.pop("recordGenerationStarts", None)
         payload["testEntryIds"] = [r["id"] for r in payload.get("records", []) if qc_workflow.test_entry_allowed(factory_id, r)]
         payload["inspectionPlans"] = inspection_plan_dates(factory_id, payload.get("records", []), payload["testEntryIds"])
         return JSONResponse(payload, headers=NO_CACHE)
@@ -520,21 +631,45 @@ async def monthly_templates_request(path, request, db, user, factory_id):
     return JSONResponse(result, headers=NO_CACHE)
 
 
+async def archive_deleted_legacy_records(factory_id, entry_ids=None):
+    pending = await run_in_threadpool(qc_inspection_sheet.pending_legacy_deletes, factory_id, entry_ids)
+    if not pending:
+        return
+    items = [{'id': row['legacy_id'], 'version': row['version'], 'actor': row['actor']} for row in pending]
+    try:
+        response = await upstream('POST', 'api/records/archive-sheet', [('company', COMPANIES[factory_id])],
+                                  json.dumps({'items': items}).encode())
+        if not response.is_success:
+            return
+        results = response.json().get('results')
+    except (HTTPException, ValueError, AttributeError):
+        return
+    if not isinstance(results, list) or len(results) != len(pending) or any(
+            status not in ('archived', 'retained', 'absent') for status in results):
+        return
+    await run_in_threadpool(qc_inspection_sheet.acknowledge_legacy_deletes, factory_id,
+                            [(row['entry_id'], status) for row, status in zip(pending, results)])
+
+
 async def inspection_sheet_request(path, request, db, user, factory_id):
     service = qc_inspection_sheet
     parts = path.split('/')
     actor = {'id': user.id, 'name': user.display_name or user.username}
     notification_actions = {'review/notifications': 'revoke', 'entries/notifications': 'return-to-inspection'}
     async def current_entries(copy_photos=True, view="workbench"):
-        response=await upstream('GET','api/bootstrap',[('company',COMPANIES[factory_id])],b'')
+        # Complete previously authorized deletes even if the initiating dialog was closed.
+        await archive_deleted_legacy_records(factory_id)
+        response=await upstream('GET','api/bootstrap',[('company',COMPANIES[factory_id]),('sheetVersions','1')],b'')
         if response.status_code!=200:raise HTTPException(503,'验货基础数据读取失败，请重试')
         data=response.json()
         examples=schedule_example(factory_id, missing_ok=True)['items'] if factory_id=='huaxing' else []
         source_rows=qc_workflow.sources(db,factory_id)['items']
         tasks=qc_workflow.list_tasks(db,factory_id)['items']
+        generations = data.get('recordGenerations')
+        generation_starts = data.get('recordGenerationStarts')
         rows=service.candidates(factory_id,data.get('records',[]),tasks,
-            source_rows,examples,data.get('referenceData',{}).get('ids',[]))
-        result=await run_in_threadpool(service.sync,factory_id,rows,copy_photos)
+            source_rows,examples,data.get('referenceData',{}).get('ids',[]),data.get('recordVersions'),generations,generation_starts)
+        result=await run_in_threadpool(service.sync,factory_id,rows,copy_photos,generations,generation_starts)
         cancelled={r['id'] for r in source_rows if r.get('sourceStatus')=='cancelled'}
         all_items=result['items']
         task_methods={task['id']:task['method'] for task in tasks if task.get('methodConfirmed') is not False}
@@ -542,6 +677,13 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
         for item in all_items:item['sourceCancelled']=item.get('sourceId') in cancelled or (item.get('sourceRecord') or {}).get('sourceStatus')=='cancelled'
         if view=='review':
             result['items']=[r for r in all_items if r.get('reviewState') in {'pending','approved'} or r.get('legacyCompleted')]
+            # The inspection sheet supports self-review under result_write.
+            # The separate supervisor workflow keeps its own review permission.
+            if has_permission_in_scope(user, 'qc_inspection:result_write', factory_id, 'qc'):
+                reads = await run_in_threadpool(service.review_read_versions, factory_id, user.id)
+                for item in result['items']:
+                    if item.get('reviewState') == 'pending':
+                        item['reviewRead'] = reads.get(item['id']) == item['revision']
         else:
             result['items']=service.workbench_items(all_items)
         return result
@@ -575,7 +717,12 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
     if path in {'intake/preview', 'intake/import', 'intake/manual'}:
         return await inspection_intake_request(path, request, db, user, factory_id, actor)
     exporting = path in {'print-preview', 'schedule-excel'}
-    _ensure_permission(db, user, 'qc_inspection:report_export' if exporting else 'qc_inspection:result_write', factory_id)
+    delete_scope = {'entries/delete': 'workbench', 'review/delete': 'pending',
+                    'review/approved/delete': 'approved'}.get(path)
+    if delete_scope:
+        _ensure_permission(db, user, 'qc_inspection:record_delete', factory_id)
+    else:
+        _ensure_permission(db, user, 'qc_inspection:report_export' if exporting else 'qc_inspection:result_write', factory_id)
     if request.headers.get('sec-fetch-site')=='cross-site':raise HTTPException(403,'不接受跨站写入')
     if request.headers.get('content-type','').split(';')[0].lower()!='application/json':raise HTTPException(415,'请使用 JSON 提交')
     raw=bytearray()
@@ -598,8 +745,19 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
     notification_action = notification_actions.get(path.removesuffix('/shown')) if path.endswith('/shown') else None
     if notification_action:
         result = await run_in_threadpool(service.review_notifications, factory_id, actor, body, action=notification_action)
+    elif path == 'review/mark-read':
+        result = await run_in_threadpool(service.mark_review_read, factory_id, user.id, body)
     elif path in {'review/confirm','review/revoke'}:
         result=await run_in_threadpool(service.review_batch,factory_id,parts[1],body,actor)
+    elif delete_scope:
+        result = await run_in_threadpool(service.delete_batch, factory_id, delete_scope, body, actor)
+        pending = [item for item in result['results'] if item.get('legacyArchive') == 'pending']
+        if pending:
+            entry_ids = [item['id'] for item in pending]
+            await archive_deleted_legacy_records(factory_id, entry_ids)
+            statuses = await run_in_threadpool(service.legacy_delete_statuses, factory_id, entry_ids)
+            for item in pending:
+                item['legacyArchive'] = statuses[item['id']]
     elif (len(parts)==3 and parts[0]=='entries' or len(parts)==4 and parts[:2]==['review','entries']) and parts[-1]=='photo-annotations':
         result=await run_in_threadpool(service.save_photo_annotations,factory_id,parts[-2],body,actor,review=len(parts)==4)
     elif len(parts)==4 and parts[:2]==['review','entries'] and parts[3] in {'save','photos','remove-photo'}:
@@ -611,7 +769,7 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
     elif len(parts)==3 and parts[0]=='entries' and parts[2] in {'save','photos','remove-photo','submit'}:
         method={'save':service.save,'photos':service.add_photo,'remove-photo':service.remove_photo,'submit':service.submit}[parts[2]]
         if parts[2]=='photos':
-            result=await run_in_threadpool(method,factory_id,parts[1],body,actor)
+            result=await run_in_threadpool(method,factory_id,parts[1],body,actor,include_upload_id=True)
         else:
             result=method(factory_id,parts[1],body,actor)
     else:raise HTTPException(404,'接口不存在')
@@ -716,10 +874,11 @@ async def workflow_request(path, request, db, user, factory_id):
         if response.status_code != 200: raise HTTPException(503, '历史记录读取失败')
         record = next((r for r in response.json().get('records',[]) if type(body['recordId']) is int and r['id']==body['recordId']), None)
         if not record: raise HTTPException(404,'历史记录不存在')
-        if record.get('updatedAt','') != body['updatedAt']: raise HTTPException(409,'记录已变化，请刷新核对')
+        if (record.get('updatedAt') or '') != body['updatedAt']: raise HTTPException(409,'记录已变化，请刷新核对')
         action=body['action'];reason=qc_workflow.text(body['reason']);stamp=qc_workflow.now()
-        if action=='approve' and record.get('status','approved')!='pending': raise HTTPException(409,'只有已提交的记录可审批')
-        if action=='return' and (not reason or record.get('status','approved') not in {'pending','approved'}): raise HTTPException(409,'请检查记录状态并填写退回原因')
+        status = _legacy_status(record)
+        if action=='approve' and status!='pending': raise HTTPException(409,'只有已提交的记录可审批')
+        if action=='return' and (not reason or status not in {'pending','approved'}): raise HTTPException(409,'请检查记录状态并填写退回原因')
         record.update(status='approved' if action=='approve' else 'rejected',updatedAt=stamp,
             reviewBy=actor['name'] if action=='approve' else '',reviewAt=stamp if action=='approve' else '',
             rejectReason=reason if action=='return' else '',rejectBy=actor['name'] if action=='return' else '',rejectAt=stamp if action=='return' else '')
@@ -729,14 +888,15 @@ async def workflow_request(path, request, db, user, factory_id):
     elif path == "manual":
         result = qc_workflow.create_entry(factory_id, body, actor)
     elif path == "legacy":
-        response = await upstream("GET", "api/bootstrap", [("company", COMPANIES[factory_id])], b"")
+        response = await upstream("GET", "api/bootstrap", [("company", COMPANIES[factory_id]), ("sheetVersions", "1")], b"")
         if response.status_code != 200:
             raise HTTPException(503, "历史记录读取失败，请重试")
         data = response.json()
         record = next((r for r in data.get("records", []) if type(body.get("recordId")) is int and r["id"] == body["recordId"]), None)
         if record is None: raise HTTPException(404, "历史记录不存在")
-        result = qc_workflow.create_entry(factory_id, body, actor, record,
-            record['id'] in data.get('referenceData', {}).get('ids', []))
+        result = await run_in_threadpool(qc_inspection_sheet.link_legacy_record, factory_id, body, actor, record,
+            record['id'] in data.get('referenceData', {}).get('ids', []),
+            data.get('recordGenerations'), data.get('recordGenerationStarts'))
     elif path == "export-prepare":
         result = qc_workflow.prepare_export(db, factory_id, body, user.id)
     elif path == "export":
@@ -759,9 +919,13 @@ async def inspection_summary_request(path, request, db, user, factory_id):
     service = qc_inspection_summary
     parts = path.split('/')
     actor = str(user.id)
+    actor_obj = {'id': user.id, 'name': user.display_name or user.username}
     if request.method == 'GET':
         if path == 'records':
             result = await run_in_threadpool(service.listing, factory_id, dict(request.query_params))
+        elif path == 'history/batches':
+            _ensure_permission(db, user, 'qc_inspection:record_delete', factory_id)
+            result = await run_in_threadpool(service.list_history_batches, factory_id)
         elif len(parts) == 2 and parts[0] == 'records':
             result = await run_in_threadpool(service.detail, factory_id, parts[1])
         elif len(parts) == 2 and parts[0] == 'history':
@@ -771,8 +935,13 @@ async def inspection_summary_request(path, request, db, user, factory_id):
         return JSONResponse(result, headers=NO_CACHE)
     if request.method != 'POST':
         raise HTTPException(405, '不支持的操作')
-    for permission in ('result_write', 'customer_manage', 'report_export'):
-        _ensure_permission(db, user, 'qc_inspection:' + permission, factory_id)
+    deleting_record = len(parts) == 3 and parts[0] == 'records' and parts[2] == 'delete'
+    rolling_back = len(parts) == 3 and parts[0] == 'history' and parts[2] == 'rollback'
+    if deleting_record or rolling_back:
+        _ensure_permission(db, user, 'qc_inspection:record_delete', factory_id)
+    else:
+        for permission in ('result_write', 'customer_manage', 'report_export'):
+            _ensure_permission(db, user, 'qc_inspection:' + permission, factory_id)
     if request.headers.get('sec-fetch-site') == 'cross-site':
         raise HTTPException(403, '不接受跨站写入')
     if request.headers.get('content-type', '').split(';')[0].lower() != 'application/json':
@@ -780,7 +949,7 @@ async def inspection_summary_request(path, request, db, user, factory_id):
     raw = bytearray()
     async for chunk in request.stream():
         raw.extend(chunk)
-        if len(raw) > (44 * 1024 * 1024 if path == 'history/preview' else 4096):
+        if len(raw) > (44 * 1024 * 1024 if path == 'history/preview' else 16384):
             raise HTTPException(413, '提交内容过大')
     try:
         body = json.loads(raw)
@@ -791,6 +960,10 @@ async def inspection_summary_request(path, request, db, user, factory_id):
         result = await run_in_threadpool(service.preview, factory_id, actor, body)
     elif len(parts) == 3 and parts[0] == 'history' and parts[2] == 'commit' and not body:
         result = await run_in_threadpool(service.commit_history, factory_id, actor, parts[1])
+    elif deleting_record:
+        result = await run_in_threadpool(service.delete_history_record, factory_id, parts[1], body, actor_obj)
+    elif rolling_back:
+        result = await run_in_threadpool(service.rollback_history_batch, factory_id, parts[1], body, actor_obj)
     else:
         raise HTTPException(404, '接口不存在')
     return JSONResponse(result, headers=NO_CACHE)

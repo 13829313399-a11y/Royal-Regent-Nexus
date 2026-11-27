@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { getAuthenticationGeneration } from '@/lib/authenticationGeneration'
+import { PackageCheck } from '@lucide/vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import { Button } from '@/components/ui/button'
@@ -37,7 +38,17 @@ let generation = 0, historyGeneration = 0, previewGeneration = 0
 function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }
 function invalidateEditor() { usageMaterial.value = null; cuttingSource.value = null; cuttingPending.value = false; editorEpoch.value++; previewGeneration++; historyGeneration++; quantities.value = []; history.value = [] }
 function statusLabel(value: string) { return ({ ACTIVE: "已审核", APPROVED: "已审核", DRAFT: "待审核", INACTIVE: "已停用" } as Record<string, string>)[value] || value }
-function blankMaterial() { return { id: '', code: '', name: '', group: '01', unit: '', department: '', specification: '', color: '', old_code: '', attribute: '外购', warehouse_category: '', expected_version: 0 } }
+function blankMaterial() {
+  return { id: '', code: '', name: '', group: '01', unit: '', department: '', specification: '', color: '', old_code: '', attribute: '外购', warehouse_category: '', expected_version: 0,
+    conversion_enabled: false, purchase_unit: '', conversion_rate: '', conversion_reference: '' }
+}
+function saveMaterial() {
+  const { conversion_enabled, purchase_unit, conversion_rate, conversion_reference, ...fields } = materialForm.value
+  const purchase_conversion = conversion_enabled
+    ? { purchase_unit, base_quantity: conversion_rate, reference: conversion_reference }
+    : null
+  return send('/materials', { ...fields, ...command(fields.expected_version), purchase_conversion }, 'material')
+}
 const ready = computed(() => route.query.factory === 'huakang-c' && access.value?.enabled && access.value.schema_ready)
 const locked = computed(() => busy.value || !!pending.value || cuttingPending.value)
 const can = (action: string) => ready.value && !!access.value?.permissions.includes(action)
@@ -67,7 +78,17 @@ async function load() {
 function discard() { return !locked.value && (!dirty.value || window.confirm('有未保存内容，是否放弃并继续？')) }
 function switchTab(value: string) { if (!discard()) return; invalidateEditor(); tab.value = value; dirty.value = false; editing.value = false; editingMaterial.value = false; imported.value = null; history.value = []; q.value = '' }
 function editBom(b?: Bom, copy = false) { if (!discard()) return; invalidateEditor(); copySource.value = copy && b ? clone(b) : null; selected.value = copy ? null : b || null; data.value = b ? clone(b.data) : newStructuredBom(newFinishedProcess.value); copyFrom.value = copy && b ? b.id : ''; copyVersion.value = copy && b ? b.version : null; if (copy) data.value.item_no = ''; editing.value = true; dirty.value = false; quantities.value = []; process.value = ''; history.value = []; reason.value = copy ? '复制新货号' : '工程资料维护' }
-function editMaterial(m?: Material) { if (!discard()) return; invalidateEditor(); const f = blankMaterial(); materialForm.value = m ? { ...f, id: m.id, code: m.code, name: m.name, expected_version: m.version, unit: m.data.unit, group: m.data.engineering?.group || m.code.split('-').slice(0, -1).join('-'), department: m.data.engineering?.department || '', attribute: m.data.engineering?.attribute || '外购', specification: m.data.spec || '', color: m.data.color || '', old_code: m.data.old_code || '', warehouse_category: m.data.category || '' } : f; editingMaterial.value = true; dirty.value = false }
+function editMaterial(m?: Material) {
+  if (!discard()) return
+  invalidateEditor()
+  const f = blankMaterial(), conversion = m?.data.engineering?.purchase_conversion
+  materialForm.value = m ? { ...f, id: m.id, code: m.code, name: m.name, expected_version: m.version, unit: m.data.unit,
+    group: m.data.engineering?.group || m.code.split('-').slice(0, -1).join('-'), department: m.data.engineering?.department || '',
+    attribute: m.data.engineering?.attribute || '外购', specification: m.data.spec || '', color: m.data.color || '', old_code: m.data.old_code || '', warehouse_category: m.data.category || '',
+    conversion_enabled: !!conversion, purchase_unit: conversion?.purchase_unit || '', conversion_rate: conversion?.base_quantity || '', conversion_reference: conversion?.reference || '' } : f
+  editingMaterial.value = true
+  dirty.value = false
+}
 function choose(n: Node, event: Event) { const value = (event.target as HTMLSelectElement).value; const m = activeMaterials.value.find(m => `${m.id}:${m.version}` === value); if (m) { n.material_id = m.id; n.material_version = m.version; n.unit = m.data.unit; n.source_code = m.code; n.source_name = m.name; if (n.parent && m.data.engineering?.attribute === '客供') { n.exempt_loss = false; notice.value = '客供物料已设为计损耗。' } } else if (!value) { n.material_id = ''; n.material_version = 0 }; dirty.value = true; quantities.value = [] }
 function command(version: number) { return { factory_id: 'huakang-c', operation_id: crypto.randomUUID(), expected_version: version, reason: reason.value } }
 function applyMatches(selections: MatchSelection[]) {
@@ -119,7 +140,7 @@ onBeforeUnmount(() => { generation++; window.removeEventListener('beforeunload',
 
 <template>
   <main class="engineering-space space-y-5">
-    <PageHeader title="工程 BOM" eyebrow="华康 C · 工程部" description="维护物料、工程用量和工序依据，保存每次审核版本。">
+    <PageHeader :motion-icon="PackageCheck" title="工程 BOM" eyebrow="华康 C · 工程部" description="维护物料、工程用量和工序依据，保存每次审核版本。">
       <template #actions><Button variant="outline" :disabled="loading || locked || dirty" @click="load">刷新资料</Button></template>
     </PageHeader>
     <p v-if="route.query.factory !== 'huakang-c'" role="status">请在华康 C 工程部打开本工作区。</p>
@@ -136,10 +157,20 @@ onBeforeUnmount(() => { generation++; window.removeEventListener('beforeunload',
         <div class="flex flex-wrap items-end gap-3"><label>查询<input v-model="q" placeholder="编码或名称" /></label><label>分类<select v-model="group"><option value="">全部</option><option v-for="g in ['01', '02', '03', '04']" :key="g">{{ g }}</option></select></label><Button :disabled="!can('material_write') || locked" @click="editMaterial()">新建物料</Button></div>
         <p v-if="!filteredMaterials.length" class="py-6 text-slate-500">暂无物料，可先建立并审核工程样本资料。</p>
         <div v-else class="overflow-x-auto"><table><thead><tr><th>编码／名称</th><th>单位／部门</th><th>状态</th><th>操作</th></tr></thead><tbody><tr v-for="m in filteredMaterials" :key="m.id"><td>{{ m.code }}<br>{{ m.name }}</td><td>{{ m.data.unit }} ／ {{ m.data.engineering?.department || '待补齐' }}</td><td>{{ statusLabel(m.status) }} · v{{ m.version }}</td><td class="space-x-2"><Button size="sm" variant="outline" :disabled="!can('material_write') || locked" @click="editMaterial(m)">维护</Button><Button size="sm" variant="outline" :disabled="!can('material_approve') || locked || dirty || m.status !== 'DRAFT'" @click="send(`/materials/${m.id}/approve`, command(m.version), 'material')">审核</Button><Button size="sm" variant="outline" :disabled="!can('material_write') || locked || dirty || m.status === 'INACTIVE'" @click="send(`/materials/${m.id}/deactivate`, command(m.version), 'material')">停用</Button><Button size="sm" variant="ghost" @click="showHistory(m.id)">历史</Button><Button size="sm" variant="outline" :disabled="dirty || locked || loading || !m.data.engineering" @click="usageMaterial = m">BOM 引用</Button></td></tr></tbody></table></div>
-        <form v-if="editingMaterial" class="mt-5 rounded-xl border p-4" @submit.prevent="send('/materials', { ...materialForm, ...command(materialForm.expected_version) }, 'material')">
+        <form v-if="editingMaterial" class="mt-5 rounded-xl border p-4" @submit.prevent="saveMaterial">
           <fieldset :disabled="locked || !can('material_write')" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" @input="dirty = true" @change="dirty = true">
             <label>编码（新建可留空续号）<input v-model="materialForm.code" :readonly="!!materialForm.id" /></label><label>分类前缀<input v-model="materialForm.group" required placeholder="例如 04-01" /></label><label>名称<input v-model="materialForm.name" required maxlength="255" /></label>
-            <label>单位<input v-model="materialForm.unit" required /></label><label>负责部门<input v-model="materialForm.department" required /></label><label>规格<input v-model="materialForm.specification" /></label><label>颜色<input v-model="materialForm.color" /></label><label>旧编码<input v-model="materialForm.old_code" /></label>
+            <label>基本单位<input v-model="materialForm.unit" name="material_unit" required /></label><label>负责部门<input v-model="materialForm.department" required /></label><label>规格<input v-model="materialForm.specification" /></label><label>颜色<input v-model="materialForm.color" /></label><label>旧编码<input v-model="materialForm.old_code" /></label>
+            <fieldset class="space-y-3 rounded-md border p-3 md:col-span-2">
+              <legend class="px-1 text-sm font-medium">采购换算</legend>
+              <label><span><input v-model="materialForm.conversion_enabled" name="conversion_enabled" type="checkbox" /> 维护采购单位换算</span></label>
+              <div v-if="materialForm.conversion_enabled" class="grid gap-3 sm:grid-cols-2">
+                <label>采购单位<input v-model="materialForm.purchase_unit" name="purchase_unit" required maxlength="128" placeholder="例如 支" /></label>
+                <label>每采购单位对应的基本单位数量<input v-model="materialForm.conversion_rate" name="conversion_rate" required inputmode="decimal" placeholder="例如 0.02" /></label>
+                <label class="sm:col-span-2">换算依据<input v-model="materialForm.conversion_reference" name="conversion_reference" required maxlength="500" placeholder="物料档案或经核实的包装规格" /></label>
+                <p class="text-sm sm:col-span-2">1 {{ materialForm.purchase_unit || '采购单位' }} = {{ materialForm.conversion_rate || '待填写' }} {{ materialForm.unit || '基本单位' }}。基本单位变更后，请重新核对换算率。</p>
+              </div>
+            </fieldset>
             <label>物料属性<select v-model="materialForm.attribute"><option v-for="v in ['外购', '自制', '委外', '客供']" :key="v">{{ v }}</option></select></label><label>仓储分类<select v-model="materialForm.warehouse_category"><option value="">不适用／待核对</option><option value="FABRIC">布料</option><option value="ACCESSORY">辅料</option><option value="THREAD">线</option></select></label><label>修改说明<input v-model="reason" required /></label><Button type="submit">保存待审物料</Button>
           </fieldset>
         </form>
@@ -177,7 +208,9 @@ onBeforeUnmount(() => { generation++; window.removeEventListener('beforeunload',
       <BomVersionComparison v-if="bomHistory.length >= 2" :versions="bomHistory" :disabled="dirty || locked || loading" @denied="failure" />
       <SectionPanel v-if="history.length" title="历史依据"><details v-for="h in history" :key="h.version" class="border-b py-2"><summary>v{{ h.version }} · {{ statusLabel(h.status) }} · {{ h.occurred_at }} · {{ h.reason }}</summary><p class="mt-2">操作人：{{ h.actor_id }}</p>
         <template v-if="'nodes' in h.data"><p>{{ h.data.item_no }} · {{ h.data.name }} · {{ h.data.specification }}</p><p>来源：{{ h.data.source_reference || '手工建立' }}</p><div class="max-h-80 overflow-auto"><table><thead><tr><th>物料</th><th>工序</th><th>分子／分母</th><th>单位</th><th>备注</th></tr></thead><tbody><tr v-for="n in h.data.nodes" :key="n.key"><td>{{ n.source_code }} {{ n.source_name }}</td><td>{{ n.process }}</td><td>{{ n.numerator }} ／ {{ n.denominator }}</td><td>{{ n.unit }}</td><td>{{ n.note }} {{ n.review_note }}</td></tr></tbody></table></div></template>
-        <template v-else><p v-if="'code' in h">{{ h.code }} · {{ h.name }}</p><p>单位：{{ h.data.unit }} · 规格：{{ h.data.spec }} · 颜色：{{ h.data.color }}</p><p>负责部门：{{ h.data.engineering?.department }} · 属性：{{ h.data.engineering?.attribute }}</p></template></details></SectionPanel>
+        <template v-else><p v-if="'code' in h">{{ h.code }} · {{ h.name }}</p><p>单位：{{ h.data.unit }} · 规格：{{ h.data.spec }} · 颜色：{{ h.data.color }}</p><p>负责部门：{{ h.data.engineering?.department }} · 属性：{{ h.data.engineering?.attribute }}</p>
+          <p v-if="h.data.engineering?.purchase_conversion">采购换算：1 {{ h.data.engineering.purchase_conversion.purchase_unit }} = {{ h.data.engineering.purchase_conversion.base_quantity }} {{ h.data.engineering.purchase_conversion.base_unit }}。依据：{{ h.data.engineering.purchase_conversion.reference }}</p>
+        </template></details></SectionPanel>
     </template>
   </main>
 </template>

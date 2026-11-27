@@ -3,6 +3,7 @@ import { mount, flushPromises, DOMWrapper, type VueWrapper } from '@vue/test-uti
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
 import { warehouseOperationsRoutes } from '../routes'
 import { WAREHOUSES, WAREHOUSE_HOME, warehousePath } from '../navigation'
+import { warehouseOperationsApi, type WarehouseDocument, type WarehouseOperationsWorkspace } from '@/api/warehouseOperations'
 
 vi.mock('@/components/layout/AccountMenu.vue', () => ({ default: { template: '<span>当前账号</span>' } }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ currentUser: { id: 'warehouse' }, authorizationVersion: 1 }) }))
@@ -17,7 +18,7 @@ vi.mock('@/api/materialHandover', () => ({ handoverApi: () => ({ pendingDeliveri
 const receivingApi = vi.hoisted(() => ({ receipts: vi.fn().mockResolvedValue({ total: 0, items: [] }), stock: vi.fn().mockResolvedValue({ total: 0, items: [] }) }))
 vi.mock('@/api/fabricMaster', () => ({ fabricMasterApi: { list: vi.fn().mockResolvedValue({ items: [], total: 0, can_manage: true }), candidates: vi.fn().mockResolvedValue([]) } }))
 vi.mock('@/api/fabricReceiving', () => ({ fabricReceivingApi: receivingApi, materialCategoryLabels: { FABRIC: '布料', ACCESSORY: '辅料', THREAD: '线' } }))
-vi.mock('@/api/warehouseOperations', () => ({ warehouseOperationsApi: { orderSummary: vi.fn().mockResolvedValue({ rows: [], details: [], totals: [], suppliers: [], basis: '仅已记收发', version: 'test' }), monthly: vi.fn().mockResolvedValue({ parties: [], summary: [], totals: [], details: [], basis: '按业务月份核对', version: 'test' }), workspace: vi.fn().mockResolvedValue({ revision: 0, stock: [], documents: [], permissions: { read: true, operate: true, quality: false, correct: false } }), post: vi.fn() } }))
+vi.mock('@/api/warehouseOperations', () => ({ warehouseOperationsApi: { orderSummary: vi.fn().mockResolvedValue({ rows: [], details: [], totals: [], suppliers: [], basis: '仅已记收发', version: 'test' }), monthly: vi.fn().mockResolvedValue({ parties: [], summary: [], totals: [], details: [], basis: '按业务月份核对', version: 'test' }), workspace: vi.fn().mockResolvedValue({ revision: 0, stock: [], documents: [], order_progress: [], permissions: { read: true, operate: true, quality: false, correct: false } }), post: vi.fn() } }))
 vi.mock('@/api/fabricInventorySetup', () => ({ fabricInventorySetupApi: { workspace: vi.fn().mockResolvedValue({ openings: [], counts: [], permissions: { read: true, operate: true, correct: false } }) } }))
 let wrapper: VueWrapper | undefined
 beforeEach(() => { vi.spyOn(window, 'scrollTo').mockImplementation(() => {}) })
@@ -178,7 +179,7 @@ describe('warehouse framework navigation', () => {
       await flushPromises()
       expect(wrapper!.get('h1').text()).toBe(section.title)
       for (const [index, view] of section.views.entries()) {
-        if (wrapper!.find('.fabric-dashboard').exists()) {
+        if (wrapper!.find('.fabric-dashboard, .semi-dashboard').exists()) {
           expect(wrapper!.text()).toContain('今日待办')
           expect(wrapper!.find('.warehouse-operations-live').exists()).toBe(false)
           continue
@@ -421,29 +422,72 @@ describe('warehouse framework navigation', () => {
     expect(wrapper!.get('.warehouse-table-heading h2, .stock-heading h2').text()).toBe('库存台账')
   })
 
-  it.each(WAREHOUSES.filter(row => row.id === 'semi-finished-warehouse'))('$title pending links open the exact business view without creating records', async warehouse => {
-    const router = await open(`${warehousePath(warehouse)}?factory=huakang-c`)
-    const destinations = wrapper!.findAll('.warehouse-shortcuts a').map(link => link.attributes('href'))
-    for (const [index, pending] of warehouse.pending.entries()) {
-      await router.push(destinations[index]!)
-      await flushPromises()
-      expect(router.currentRoute.value.path).toBe(warehousePath(warehouse, pending.section))
-      expect(router.currentRoute.value.query.view).toBe(pending.view)
-      if (wrapper!.find('.fabric-procurement').exists()) {
-        expect(wrapper!.get('.warehouse-table-heading h2, .stock-heading h2').text()).toBe('采购待收料')
-        expect(wrapper!.text()).toContain('当前跟进范围没有记录')
-        continue
-      }
-      if (wrapper!.find('.warehouse-operations-live').exists()) {
-        expect(wrapper!.text()).toMatch(/暂无|还没有实际入库记录/)
-        expect(wrapper!.find('tbody').text()).toBe('')
-        continue
-      }
-      expect(wrapper!.get('.warehouse-table-heading h2, .stock-heading h2').text()).toBe(warehouse.sections.find(section => section.path === pending.section)!.views.find(view => view.id === pending.view)!.title)
-      expect(wrapper!.get('fieldset').attributes('disabled')).toBeDefined()
-      expect(wrapper!.text()).toContain('业务记录未接入')
-      expect(wrapper!.find('tbody')!.text()).toBe('')
+  it('opens exact semi dashboard sources and counts only outstanding handoffs', async () => {
+    const released = {
+      id: 'RELEASE-1', sequence: 1, kind: 'SEMI_RELEASE', business_date: '2026-11-10', occurred_at: '', actor_name: '仓库',
+      data: { item_name: '测试头部', item_code: 'ITEM-1', production_no: 'PLAN-1', part: '头', label_code: '2606HK',
+        source_no: '原放产单', source_line: '2', unit: '件', quantity: '20', allocations: [] },
+    } as WarehouseDocument
+    const extraRelease = { ...released, id: 'RELEASE-2', data: { ...released.data, item_name: '测试身体', part: '身体' } }
+    const sent = {
+      ...released, id: 'SEND-1', kind: 'PROCESS_SEND', consumed_quantity: '12', returned_quantity: '3',
+      data: { ...released.data, source_no: '原加工发出单', counterparty: '加工组' },
+      batch_snapshot: { unit: '件' },
+    } as WarehouseDocument
+    const pack = {
+      ...released, id: 'PACK-1', kind: 'PACK_SEND', received_quantity: '3.4', returned_quantity: '1.1',
+      data: { ...released.data, source_no: '原包装交接单', counterparty: '包装组', quantity: '6.5', unit: '对' },
+    } as WarehouseDocument
+    const row = { release_id: released.id, received: '10', pending_receipt: '10', extra_received: '0', stock: [], processing: [], packaging: [], document_ids: [] }
+    const data: WarehouseOperationsWorkspace = {
+      revision: 8, stock: [], permissions: { read: true, operate: true, quality: false, correct: false },
+      documents: [pack, { ...pack, id: 'PACK-CLOSED', received_quantity: '5.4' }, { ...pack, id: 'PACK-VOID', reversed: true }, sent, released, extraRelease],
+      order_progress: [row, { ...row, release_id: extraRelease.id, received: '23', pending_receipt: '0', extra_received: '3' }],
     }
+    const workspace = vi.mocked(warehouseOperationsApi.workspace)
+    workspace.mockResolvedValueOnce({ ...data, order_progress: undefined })
+    const router = await open(`${WAREHOUSE_HOME}/semi-finished-warehouse/overview?factory=huakang-c`)
+    expect(wrapper!.findAll('.warehouse-todo')[0]!.text()).toContain('放产进度不可用')
+    expect(wrapper!.findAll('.warehouse-todo')[0]!.find('.warehouse-todo-count').exists()).toBe(false)
+    expect(wrapper!.findAll('.warehouse-todo')[1]!.text()).toContain('在外 8 件')
+    workspace.mockResolvedValueOnce(data)
+    await wrapper!.findAll('.warehouse-dashboard-actions button').find(button => button.text() === '刷新')!.trigger('click')
+    await flushPromises()
+    const panels = wrapper!.findAll('.warehouse-todo')
+    expect(panels.map(panel => panel.get('h3').text())).toEqual(['待收货', '加工在外', '包装待签收', '实收超计划'])
+    expect(panels.map(panel => panel.get('.warehouse-todo-count').text())).toEqual(['1 项', '1 笔', '1 笔', '1 项'])
+    expect(panels[1]!.text()).toContain('在外 8 件')
+    expect(panels[2]!.text()).toContain('待签 2.0 对')
+    const [receipt, processing, packaging, extra] = panels.map(panel => panel.get('.warehouse-todo-row').attributes('href'))
+    const body = new DOMWrapper(document.body)
+
+    workspace.mockResolvedValueOnce(data)
+    await router.push(receipt!); await flushPromises()
+    expect(router.currentRoute.value.query).toMatchObject({ view: 'pending', release: released.id })
+    expect(body.get('[role="dialog"]').text()).toContain('原放产单 / 2')
+    expect(wrapper!.get('tbody').text()).not.toContain('测试身体')
+
+    workspace.mockResolvedValueOnce(data)
+    await router.push(processing!); await flushPromises()
+    expect(router.currentRoute.value.query).toMatchObject({ view: 'processing', followup: 'pending', record: sent.id })
+    expect(body.get('[role="dialog"]').text()).toContain('原加工发出单')
+
+    workspace.mockResolvedValueOnce(data)
+    await router.push(packaging!); await flushPromises()
+    expect(wrapper!.get('tbody').findAll('tr')).toHaveLength(1)
+    expect(body.get('[role="dialog"]').text()).toContain('原包装交接单')
+    await body.get('[role="dialog"]').findAll('button').find(button => button.text() === '代录签收')!.trigger('click')
+    const original = body.get<HTMLSelectElement>('form [aria-label="关联原单"]')
+    expect(original.element.value).toBe(pack.id)
+    expect(original.element.disabled).toBe(true)
+    await body.get('form').findAll('button').find(button => button.text() === '关闭')!.trigger('click')
+
+    workspace.mockResolvedValueOnce(data)
+    await router.push(extra!); await flushPromises()
+    expect(router.currentRoute.value.query).toMatchObject({ view: 'progress', receipt_progress: 'extra', release: extraRelease.id })
+    expect(wrapper!.get('tbody').text()).toContain('超收 3 件')
+    expect(body.get('[role="dialog"]').text()).toContain('测试身体')
+    expect(warehouseOperationsApi.post).not.toHaveBeenCalled()
   })
 
   it.each(['', '?factory=group', '?factory=huakang-d', '?factory=huaxing', '?factory=huakang-c&factory=huakang-d'])(

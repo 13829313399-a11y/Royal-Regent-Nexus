@@ -23,9 +23,21 @@ afterEach(() => vi.unstubAllEnvs())
 describe('actual final catalog and registered route families', () => {
   it('accounts for every catalog appearance under every raw factory without granting routes', () => {
     const coverage: Record<string, unknown>[] = []
+    const expectedModules: Record<ModuleDepartmentId, string[]> = {
+      'engineering': ['molding-sample', 'bom-process', 'ecn', 'drawings', 'maintenance'],
+      'pmc-warehouse': ['material-purchasing', 'process-material-dates', 'fabric-warehouse', 'material-handover', 'semi-finished-warehouse', 'carton-procurement', 'carton-supplier', 'carton-mark-check', 'raw-material-management', 'shipping-management'],
+      'production': ['injection-scheduling', 'production-plan', 'three-d-printing', 'molding-sample-production-task', 'cutting', 'spray-production', 'uv-printing'],
+      'qa': ['incoming-inspection', 'inspection-operations', 'quality-exception', 'quality-reports'],
+      'qc': ['inspection-operations', 'carton-mark-check'],
+      'sales-business': ['material-planning', 'internal-quote-desk', 'customer-price-conversion', 'indonesia-shipping', 'po-schedule-intake'],
+      'accounting': ['indonesia-invoice-reconciliation', 'mainland-invoice'],
+    }
+    expect(Object.keys(departmentModuleRegistry).sort()).toEqual(Object.keys(expectedModules).sort())
     let appearances = 0
     for (const department of Object.keys(departmentModuleRegistry) as ModuleDepartmentId[]) {
-      appearances += departmentModuleRegistry[department].modules.length
+      const ids = departmentModuleRegistry[department].modules.map(module => module.id)
+      expect([...ids].sort()).toEqual([...expectedModules[department]].sort())
+      appearances += ids.length
       const visible = useVisibleModules(department)
       for (const factory of factoryContexts) {
         useAppStore().setActiveFactory(factory.id)
@@ -49,7 +61,7 @@ describe('actual final catalog and registered route families', () => {
         }
       }
     }
-    expect(appearances).toBe(30)
+    expect(appearances).toBe(35)
     expect(coverage.some(row => row.module === 'uv-printing' && row.factory === 'huakang-a' && row.state === 'shared-host')).toBe(true)
     expect(coverage.some(row => row.module === 'production-plan' && row.control === 'href' && row.state === 'redirects-home-no-module-launch')).toBe(true)
     if (process.env.ROUTE_MOTION_COVERAGE_OUTPUT) writeFileSync(process.env.ROUTE_MOTION_COVERAGE_OUTPUT, JSON.stringify({ source: 'actual useVisibleModules + router registry; synthetic explicit catalog read grants, not runtime permission acceptance', appearances, rows: coverage }, null, 2))

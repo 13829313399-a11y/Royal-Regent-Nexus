@@ -32,13 +32,14 @@ COOKIE = "qc_mobile_session"
 TTL = 8 * 60 * 60
 TOKEN = re.compile(r"^[A-Za-z0-9_-]{43}$")
 HEADERS = {**NO_CACHE, "Referrer-Policy": "no-referrer"}
-MOBILE_ASSETS = frozenset({"index.html", "app.js", "app.css", "icon.svg", "remote.js", "qc-photo-shapes.js"})
+SHARED_ASSETS = frozenset({"qc-photo-shapes.js", "qc-glass-guide.js", "qc-glass-guide.css"})
+MOBILE_ASSETS = frozenset({"index.html", "app.js", "app.css", "icon.svg", "remote.js"}) | SHARED_ASSETS
 MOBILE_READY = {"service": "qc-mobile", "ready": True}
 DNS_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 
 
 def production():
-    return settings.app_env.strip().lower() in {"production", "prod"}
+    return settings.qc_mobile_require_https or settings.app_env.strip().lower() in {"production", "prod"}
 
 
 def configured_origin():
@@ -53,10 +54,15 @@ def configured_origin():
         raise HTTPException(503, "移动验货访问地址尚未配置或不正确")
     if production():
         host = parsed.hostname
-        if (parsed.scheme != "https" or port not in (None, 443) or len(host) > 253
-                or not re.fullmatch(rf"(?:{DNS_LABEL}\.)+{DNS_LABEL}", host)
-                or host.rsplit(".", 1)[1].isdigit() or host.endswith((".local", ".localhost"))):
-            raise HTTPException(503, "正式移动验货需要配置公司 HTTPS 域名，请联系管理员")
+        try:
+            address = ip_address(host)
+        except ValueError:
+            valid_host = (len(host) <= 253 and re.fullmatch(rf"(?:{DNS_LABEL}\.)+{DNS_LABEL}", host)
+                          and not host.rsplit(".", 1)[1].isdigit() and not host.endswith((".local", ".localhost")))
+        else:
+            valid_host = address.version == 4 and address.is_global and not address.is_multicast and not address.is_reserved
+        if parsed.scheme != "https" or port not in (None, 443) or not valid_host:
+            raise HTTPException(503, "正式移动验货需要配置 HTTPS 域名或固定公网 IPv4，请联系管理员")
         origin = f"https://{host}"
     return origin, parsed
 
@@ -66,7 +72,7 @@ def production_request_origin(request):
     # The outer gateway terminates TLS. Match its preserved Host to the
     # configured authority, without trusting client-supplied forwarding headers.
     if request.headers.get("host", "").lower() not in {parsed.hostname, f"{parsed.hostname}:443"}:
-        raise HTTPException(503, "请从公司正式 HTTPS 域名打开验货台并重新扫码")
+        raise HTTPException(503, "请从公司正式 HTTPS 地址打开验货台并重新扫码")
     return origin
 
 
@@ -266,23 +272,19 @@ async def sheet(path: str, request: Request, db: Session = Depends(get_db), auth
     if not permitted:
         raise HTTPException(404, "移动验货未开放此操作")
     if request.method == "POST":
-        payload = await body(request, 15*1024*1024 if path.endswith("/photos") else 1024*1024)
+        await body(request, 15*1024*1024 if path.endswith("/photos") else 1024*1024)
     if request.method == "GET" and re.fullmatch(r"entries/[^/]+", path):
         with qc_inspection_sheet.store() as conn:
             item = qc_inspection_sheet.unpack(conn, qc_inspection_sheet.get(conn, grant["factory"], path.split('/')[1]))
         return JSONResponse(item, headers=HEADERS)
     response = await inspection_sheet_request(path, request, db, user, grant["factory"])
-    if request.method == 'POST' and path.endswith('/photos'):
-        with qc_inspection_sheet.store() as conn:
-            photo = conn.execute('SELECT id FROM photos WHERE entry_id=? AND origin=?', (path.split('/')[1], 'upload:'+payload['requestKey'])).fetchone()
-        data = json.loads(response.body)
-        data['uploadedPhotoId'] = photo['id'] if photo else None
-        return JSONResponse(data, headers=HEADERS)
+    if request.method == "POST" and path.endswith("/photos"):
+        response.headers.update(HEADERS)
     return response
 
 
 def mobile_asset_path(name):
-    return ASSETS / name if name == "qc-photo-shapes.js" else ASSETS / "mobile-inspection" / name
+    return ASSETS / name if name in SHARED_ASSETS else ASSETS / "mobile-inspection" / name
 
 
 @router.get("/app/{asset:path}")

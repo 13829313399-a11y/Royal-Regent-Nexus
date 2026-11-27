@@ -3,10 +3,12 @@ import hashlib
 import json
 from decimal import Decimal, localcontext, ROUND_HALF_UP
 from fractions import Fraction
+from pydantic import ValidationError
 from uuid import uuid4
 from sqlalchemy import and_, inspect, select, text
 from app.core.time import business_now
 from app.models.material_plan import MaterialPlan, MaterialPlanEvent
+from app.schemas.engineering_bom import PurchaseConversion
 from app.services import engineering_bom as bom
 from app.services import material_plan_orders as orders
 from app.services.auth import authorization_decision
@@ -95,15 +97,45 @@ def calculate(frozen, inputs):
             engineering_exempt_loss=n['exempt_loss'], engineering_attribute=engineering_attribute,
             base=amount(base), loss=amount(loss), gross=amount(gross)))
         key = (material['id'], material['version'], n['unit'], attribute)
-        group = groups.setdefault(key, dict(metadata=metadata, base=Fraction(0), loss=Fraction(0), gross=Fraction(0), processes=set(), keys=[]))
+        group = groups.setdefault(key, dict(metadata=metadata, material=material, base=Fraction(0), loss=Fraction(0), gross=Fraction(0), processes=set(), keys=[]))
         for field, value in (('base', base), ('loss', loss), ('gross', gross)):
             group[field] += value
         group['processes'].add(n['process']); group['keys'].append(n['key'])
     return dict(lines=lines, totals=[g['metadata'] | dict(base=amount(g['base']), loss=amount(g['loss']), gross=amount(g['gross']),
-            processes=sorted(g['processes']), keys=g['keys']) for g in groups.values()],
+            processes=sorted(g['processes']), keys=g['keys'], purchase_conversion=purchase_equivalent(g)) for g in groups.values()],
         finished_quantity=amount(quantity), finished_unit=next(n['unit'] for n in nodes if not n['parent']),
         supply_status='PENDING_VERIFICATION', net_purchase_quantity=None,
-        pending=['库存基线及占用', '有效在途及分配', '采购填写工序物料期', '正式订单绑定'], algorithm='gross-fraction-v2-attribute')
+        pending=['库存基线及占用', '有效在途及分配', '采购填写工序物料期', '正式订单绑定'], algorithm='gross-fraction-v3-purchase-reference')
+
+
+def purchase_equivalent(group):
+    """Reference only, from pinned evidence; never a net purchase recommendation."""
+    metadata, material = group['metadata'], group['material']
+    if metadata['attribute'] not in ('外购', '委外'):
+        return dict(status='NOT_APPLICABLE')
+    conversion = material['data'].get('engineering', {}).get('purchase_conversion')
+    if not conversion:
+        return dict(status='MISSING')
+    if not isinstance(conversion, dict):
+        return dict(status='INVALID')
+    if conversion.get('base_unit') != metadata['unit'] or material['data'].get('unit') != metadata['unit']:
+        return dict(status='UNIT_MISMATCH')
+    try:
+        validated = PurchaseConversion.model_validate({k: v for k, v in conversion.items() if k != 'base_unit'})
+    except ValidationError:
+        return dict(status='INVALID')
+    rate = Fraction(validated.base_quantity)
+    if validated.purchase_unit == metadata['unit'] and rate != 1:
+        return dict(status='INVALID')
+    precise = group['gross'] / rate
+    rounded = -(-precise.numerator // precise.denominator)
+    surplus = rounded * rate - group['gross']
+    if precise > 10 ** 24 or surplus > 10 ** 24:
+        return dict(status='OUT_OF_RANGE')
+    return dict(status='READY', purchase_unit=validated.purchase_unit, base_unit=metadata['unit'],
+        base_quantity=amount(rate), reference=validated.reference,
+        exact_quantity=amount(precise), rounded_quantity=str(rounded),
+        surplus=amount(surplus))
 
 
 def record(db, user, identity):

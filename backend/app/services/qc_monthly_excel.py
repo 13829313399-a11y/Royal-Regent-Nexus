@@ -57,6 +57,10 @@ def _asset(kind):
 
 
 def _photo(factory, entry, photo, quality='preview', allow_fallback=False, fallback_photos=None):
+    return approved_photo(factory, entry['id'], entry['revision'], photo['id'], quality, allow_fallback, fallback_photos)[0]
+
+
+def approved_photo(factory, entry_id, revision, photo_id, quality='preview', allow_fallback=False, fallback_photos=None):
     path=Path(settings.qc_department_data_dir).resolve()/'_inspection_sheet/inspections.sqlite3'
     try:
         with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)) as conn:
@@ -64,14 +68,14 @@ def _photo(factory, entry, photo, quality='preview', allow_fallback=False, fallb
             row=conn.execute("""SELECT p.* FROM photos p JOIN entries e ON e.id=p.entry_id
                 JOIN entry_details d ON d.entry_id=e.id WHERE e.factory=? AND e.id=? AND e.revision=?
                 AND d.review_state='approved' AND p.id=? AND p.removed=0""",
-                (factory,entry['id'],entry['revision'],photo['id'])).fetchone()
+                (factory,entry_id,revision,photo_id)).fetchone()
             if row is None:raise HTTPException(409,'验货照片或审核记录已变化，请刷新核对后导出')
             if quality=='original' and not assets.public_metadata(conn,row['id'])['originalAvailable']:
                 if not allow_fallback:
                     raise HTTPException(409,dict(code='original_missing',message='部分照片未保留原图。请选择预览图，或明确勾选允许缺失原图的照片使用预览图。'))
                 quality='preview'
-                if fallback_photos is not None:fallback_photos.append(photo['id'])
-            return assets.read(conn,row,quality)[0]
+                if fallback_photos is not None:fallback_photos.append(photo_id)
+            return assets.read(conn,row,quality)
     except sqlite3.Error as exc:raise HTTPException(503,'验货照片读取失败，请重试') from exc
 
 
@@ -385,7 +389,10 @@ def checked_data(factory, body):
 
 
 def prepare(factory, owner, body):
+    from app.services.qc_report_empty_cols import split_option
+    body, enabled = split_option(body)
     data=checked_data(factory,body)
+    data.update(hideEmptyCols=enabled, hiddenColumns=[])
     kind=body['template']
     content = render(data, kind, factory)
     fresh = monthly.query(factory, body['date'], body['customer'],kind=='overview',kind if kind in monthly.design.NAMES else None)
@@ -393,7 +400,8 @@ def prepare(factory, owner, body):
         raise HTTPException(409, '导出期间记录已变化，请刷新后重试')
     photo_quality='preview' if kind in {'issues','tracking'} and any(row['photos'] for row in data['tables'][kind]) else None
     download_name = filename(kind,data['dateFrom'],data['dateTo'],photo_quality)
-    return store_download(owner,content,kind,data['dateFrom'],data['dateTo'],photo_quality)
+    return {**store_download(owner,content,kind,data['dateFrom'],data['dateTo'],photo_quality),
+            'hiddenColumns': data['hiddenColumns']}
 
 
 def store_download(owner,content,kind,start,end,quality=None,period='monthly'):

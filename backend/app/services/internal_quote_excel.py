@@ -32,6 +32,7 @@ from app.models.internal_quote import (
 )
 from app.schemas.internal_quote import SECTION_CODE_ORDER
 from app.services.internal_quote_calculator import (
+    DEFAULT_ASSEMBLY_LABOR_BASE_HKD,
     CalculationInputError,
     resolve_justplay_carton_basis,
     resolve_justplay_packaging_inputs,
@@ -659,9 +660,13 @@ def _purchase_source_lines(section: InternalQuoteSection | None) -> list[dict[st
         for source, line in zip(sources, lines)
     )
     result = []
+    next_formula_row = 2
     for index, line in enumerate(lines):
         entry = {**line, "section": code, "label": line.get("item", ""), "source_line_index": index,
                  "amount_hkd": line.get("amount_hkd", line.get("line_hkd", 0))}
+        if code == "engineering" and line.get("resin_processing_formula"):
+            entry["formula_sheet_row"] = next_formula_row
+            next_formula_row += 1
         if paired:
             entry["source_path"] = sources[index]["_output_path"]
         if paired and "quote_groups" not in payload:
@@ -730,9 +735,19 @@ def _purchase_detail_label(entry: dict[str, Any], fallback: str = "") -> str:
     return result
 
 
+def _buzzbee_unit_expression(row, inputs_sheet="", fx_sheet=""):
+    return f"{inputs_sheet}$D${row}/454*{inputs_sheet}$E${row}+{inputs_sheet}$F${row}/{fx_sheet}$L$4"
+
+
 def _pricing_entry_amount(entry: dict[str, Any]) -> object:
     if entry.get("quote_amount_adopted"):
         return _float_value(entry.get("amount_hkd"))
+    if "formula_sheet_row" in entry:
+        row = entry["formula_sheet_row"]
+        ref = "'外购计价'!"
+        formula = f"=({_buzzbee_unit_expression(row, inputs_sheet=ref)})*{ref}$G${row}*{ref}$H${row}"
+        factor = _float_value(entry.get("formula_allocation_factor"), 1.0)
+        return formula if factor == 1 else f"{formula}*{factor:.15g}"
     if entry.get("source_unit_price") not in (None, "") and entry.get("quantity") not in (None, ""):
         price = _float_value(entry["source_unit_price"])
         formula = f"={format(price, '.15g')}"
@@ -1921,6 +1936,9 @@ def _build_summary_sheet(
     # and exchange values.  The extra R column keeps HKD/USD and selected MOQ
     # visible and auditable without crowding the reference template's C:Q grid.
     materials = _reference_materials(reference_snapshot)[:18]
+    material_prices = reference_snapshot.get("material_prices")
+    material_keys = list(material_prices) if isinstance(material_prices, dict) else []
+    sheet._quote_material_cells = {}
     machines = _reference_machines(reference_snapshot)[:10]
     material_reference_cells: list[tuple[str, float, str]] = []
     machine_reference_cells: list[tuple[str, float, str]] = []
@@ -1963,6 +1981,9 @@ def _build_summary_sheet(
                 machine_reference_cells.append(reference)
             else:
                 material_reference_cells.append(reference)
+                if material_keys:
+                    key = material_keys[start_index + offset - start_column]
+                    sheet._quote_material_cells[key] = sheet.cell(header_row + 1, offset).coordinate
 
     fx = _dict_value(reference_snapshot.get("fx", {}))
     sheet["L3"] = "汇率"
@@ -1982,7 +2003,7 @@ def _build_summary_sheet(
     )
     sheet["M4"] = _float_value(
         current_labor_base,
-        _float_value(reference_snapshot.get("assembly_labor_base_hkd"), 260),
+        _float_value(reference_snapshot.get("assembly_labor_base_hkd"), DEFAULT_ASSEMBLY_LABOR_BASE_HKD),
     )
     sheet["M4"].number_format = "#,##0"
     top_tax_rows = (
@@ -3673,6 +3694,7 @@ def _replace_with_component_summary_sheet(
     source = workbook["报价明细"]
     source.title = "_报价明细计算"
     target = workbook.create_sheet("报价明细", 0)
+    target._quote_material_cells = source._quote_material_cells
     shipping = _dict_value(rr2_cost_summary.get("shipping_pricing", {}))
     pricing_groups = _list_of_dicts(shipping.get("pricing_groups", []))
     pricing_entries = _purchase_pricing_entries(_list_of_dicts(shipping.get("pricing_entries", [])), sections)
@@ -5629,6 +5651,37 @@ def _legacy_attachment_workbook(content: bytes) -> Workbook:
     return target
 
 
+def _append_purchase_formulas(workbook, section, material_cells):
+    lines = [line for line in _purchase_source_lines(section) if line.get("resin_processing_formula")]
+    if not lines:
+        return
+    sheet = workbook.create_sheet("外购计价")
+    summary = workbook["报价明细"]
+    sheet.append(["零件名称", "胶料", "料型", "胶料价 HKD/lb", "单条重量 g", "单条啤工 RMB", "用量", "损耗率", "单价 HKD/条"])
+    for line in lines:
+        inputs = line["resin_processing_formula"]
+        row = line["formula_sheet_row"]
+        key = f"{inputs['material']}|{inputs['grade']}"
+        price_cell = material_cells.get(key)
+        price = f"='采用价目表'!{price_cell}" if price_cell else float(inputs["price_hkd_lb"])
+        header = summary._quote_material_cells.get(key)
+        if header:
+            summary[header] = price
+            price = f"='报价明细'!{header}"
+        for column, label in enumerate((line["item"], inputs["material"], inputs["grade"]), 1):
+            sheet.cell(row, column, _safe_text(label)).data_type = "s"
+        sheet.cell(row, 4, price)
+        for column, value in enumerate((inputs["weight_g"], inputs["labor_rmb"], line["quantity"], line["loss_rate"]), 5):
+            sheet.cell(row, column, _float_value(value))
+        sheet.cell(row, 9, "=" + _buzzbee_unit_expression(row, fx_sheet="'报价明细'!")).number_format = "0.0000"
+    for cell in sheet[1]:
+        cell.font = Font(bold=True, color=WHITE)
+        cell.fill = PatternFill("solid", fgColor=TEAL)
+    for column, width in zip("ABCDEFGHI", (32, 16, 24, 20, 18, 20, 12, 12, 18)):
+        sheet.column_dimensions[column].width = width
+    sheet.freeze_panes = "A2"
+
+
 def build_internal_quote_workbook_model(
     quote: InternalQuote,
     sections: list[InternalQuoteSection],
@@ -5683,7 +5736,8 @@ def build_internal_quote_workbook_model(
     from app.services.internal_quote_price_notes import append_price_notes
     append_price_notes(workbook, sections, attachments, quote.region_code, reference_snapshot)
     from app.services.internal_quote_price_basis import append_price_basis
-    append_price_basis(workbook, quote, sections, reference_snapshot or {})
+    material_cells = append_price_basis(workbook, quote, sections, reference_snapshot or {})
+    _append_purchase_formulas(workbook, by_code.get("engineering"), material_cells)
     workbook.active = 0
     workbook.calculation.fullCalcOnLoad = True
     workbook.calculation.forceFullCalc = True

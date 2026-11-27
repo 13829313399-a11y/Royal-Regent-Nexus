@@ -1,6 +1,6 @@
 # A01–A39 验收台账
 
-2026-09-29 补齐软件差距，最新完整证据见 [软件验收](SOFTWARE_ACCEPTANCE_20260929.md)。真实采集与真实资料配置按用户要求延期。
+2026-09-29 补齐软件差距，最新完整证据见 [软件验收](../archive/completed/uv-operations/SOFTWARE_ACCEPTANCE_20260929.md)。真实采集与真实资料配置按用户要求延期。
 
 “软件通过”只指合成自动化/浏览器证据，不代表现场通过。测试在 backend/tests/test_uv_ops*.py、src/features/uv-operations/__tests__/、edge/uv-printing-agent/tests/test_agent.py。未测项不能由通过数替代。
 
@@ -48,6 +48,6 @@
 
 另有返工取消不复活、拆合谱系、Run匹配后禁止重组、返工UI唯一批次、封账迟到阻断、工资冻结竞争、报表导出一次计算等回归。补充1000组随机分币及各15步核数纠错/库存幂等序列；未宣称全面模糊测试。
 
-截图见 [VISUAL_QA](VISUAL_QA.md)，命令、容量及限制见 [TEST_EVIDENCE](TEST_EVIDENCE.md)。
+截图见 [VISUAL_QA](../archive/completed/uv-operations/VISUAL_QA.md)，命令、容量及限制见 [TEST_EVIDENCE](TEST_EVIDENCE.md)。
 
 本轮补充：未知节拍人工估时、子批多机/同治具版本冲突、在制未来推荐、跨班完工、有效账本冲销、库存历史日期、30天6000条完整分页、原生拖动预览取消确认及四类实际XLSX下载通过。

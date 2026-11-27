@@ -18,14 +18,14 @@
 
 生产前端构建须将 `VITE_IAM_IDENTITY_UI_ENABLED`、`VITE_POSITION_WORKBENCH_ENABLED`、`VITE_IAM_CONSOLIDATED_UI_ENABLED` 和 `VITE_IAM_STUDIO_ENABLED` 全部设为 `true`。在实际生效的 Compose 文件、环境文件和 CI 构建参数中核对这四项。Vite 在编译时选择界面，给已构建容器设置环境变量不能修复错误的包。后端开关按本次业务授权维护。
 
-生产 Dockerfile 使用 BuildKit 只读检查最终静态目录，并把回执与启动检查装入 Nginx 镜像。标准镜像从第一次启动起就会复验成品。服务器若接收独立构建的压缩包，在切换前用宿主 Python 3.9+ 验证待发文件。脚本从 index.html 找到实际入口，核对四个管理菜单、人员和审计的路由导入、权限方案库的展示与查询分支、员工自助的全页模式，再核对相关组件文件。HTTP 模式只访问公开页面和脚本。 [验收工具](../deploy/check_iam_frontend.py)
+生产 Dockerfile 使用 BuildKit 只读检查最终静态目录，并把回执与启动检查装入 Nginx 镜像。标准镜像从第一次启动起就会复验成品。服务器若接收独立构建的压缩包，在切换前用宿主 Python 3.9+ 验证待发文件。脚本从 index.html 找到实际入口，核对四个管理菜单、人员和审计的路由导入、权限方案库的展示与查询分支、员工自助的全页模式，再核对相关组件文件。若菜单独立分包，还校验系统布局实际导入的菜单模块，并将两者的摘要写入回执。HTTP 模式只访问公开页面和脚本。 [验收工具](../deploy/check_iam_frontend.py)
 
 ```sh
 # 按实际批次提供 ARCHIVE、WEB_ID 和最终站点 ORIGIN（含 http 或 https）。
 guard=/opt/royal-regent/iam-web-release
 python3 "$guard/check_iam_frontend.py" --archive "$ARCHIVE" --approve-dir "$guard/approved" > iam-candidate.txt
 # 已构建的镜像也可用 --image "$IMAGE" 验收；检查过程中不会启动候选容器。
-# Web 切换后、维护解除前，检查实际安装的六个文件。
+# Web 切换后、维护解除前，检查实际安装的所有回执文件。
 python3 "$guard/check_iam_frontend.py" --container "$WEB_ID" > iam-installed.txt
 cmp iam-candidate.txt iam-installed.txt
 # 恢复访问后，从实际站点检查人员、办理大厅、方案库、审计和员工自助入口。
@@ -33,7 +33,7 @@ python3 "$guard/check_iam_frontend.py" --url "$ORIGIN" > iam-served.txt
 cmp iam-candidate.txt iam-served.txt
 ```
 
-将这些命令纳入遇错即停的发布脚本。宿主可用 `install -m 0755 deploy/99-verify-iam-web.sh "$guard/99-verify-iam-web.sh"` 和 `install -m 0644 deploy/check_iam_frontend.py "$guard/check_iam_frontend.py"` 安装门禁。创建该目录并限制为部署账号写入。在实际生效的 Web 服务中保留下列只读挂载及官方 Nginx entrypoint。候选通过审核后，工具按 index.html 的 SHA-256 原子生成一份六文件回执。同一入口摘要重复批准须与先前已签发的全部文件摘要一致。每次容器启动都会按回执校验。 [Nginx 启动检查](../deploy/99-verify-iam-web.sh)
+将这些命令纳入遇错即停的发布脚本。宿主可用 `install -m 0755 deploy/99-verify-iam-web.sh "$guard/99-verify-iam-web.sh"` 和 `install -m 0644 deploy/check_iam_frontend.py "$guard/check_iam_frontend.py"` 安装门禁。创建该目录并限制为部署账号写入。在实际生效的 Web 服务中保留下列只读挂载及官方 Nginx entrypoint。候选通过审核后，工具按 index.html 的 SHA-256 原子生成一份文件校验回执。同一入口摘要重复批准须与先前已签发的全部文件摘要一致。每次容器启动都会按回执校验。 [Nginx 启动检查](../deploy/99-verify-iam-web.sh)
 
 ```yaml
 services:
@@ -119,7 +119,13 @@ curl -f http://127.0.0.1/health
 
 ### 移动验货上线验收
 
-启用时，在受管 `.env.production` 中设置 `QC_MOBILE_PUBLIC_ORIGIN` 为验货台和员工手机共用的固定 HTTPS 域名（443，不含路径）。不应写服务器 IP、桌面电脑地址或 5298。生产由已存在的 Web 代理把 `/api/qc-mobile/` 原样转发到正式 API，不另启局域网监听。外层 HTTPS 入口须保留正式 `Host`，原样转发 `Origin`、`Cookie` 和 `Set-Cookie`，不能缓存该前缀、覆盖错误状态或把路径回退到主站 `index.html`。外层负责证书自动续期和 HTTP 到 HTTPS 的跳转。保持受管的单正式 API 和 QC 持久卷；在设计验证共享状态前，不给手机入口挂接各自使用独立配对库的 API 副本。
+[2026-11-24 公司交接：仅 QC 候选的构建、基线核对、切换与现场验收](../deploy/qc-mobile-20261124/README.md)。
+
+启用时，在受管 `.env.production` 中设置 `QC_MOBILE_PUBLIC_ORIGIN` 为验货台和员工手机共用的固定 HTTPS 地址（443，不含路径）。可以使用域名；只有固定公网 IPv4 时也可配置 `https://<固定公网IPv4>`，证书须受员工手机信任并在 `iPAddress` SAN 中包含该 IP。确认 443 入口在客户端不发送域名 SNI 时也会提供正确的证书链，并实测证书自动续期和加载。不能使用局域网地址或 5298。
+
+生产由已存在的 Web 代理把 `/api/qc-mobile/` 原样转发到正式 API，不另启局域网监听。外层 HTTPS 入口须保留正式 `Host`，原样转发 `Origin`、`Cookie` 和 `Set-Cookie`，不能缓存该前缀、覆盖错误状态或把路径回退到主站 `index.html`。外层负责证书自动续期和 HTTP 到 HTTPS 的跳转。保持受管的单正式 API 和 QC 持久卷；在设计验证共享状态前，不给手机入口挂接各自使用独立配对库的 API 副本。
+
+历史实例若尚未全站切换 `APP_ENV=production`，在正式 API 上设置 `QC_MOBILE_REQUIRE_HTTPS=true` 可单独启用移动验货的正式来源检查、服务就绪检查和 Secure Cookie，桌面验货台须从配置的 HTTPS 地址打开。全局生产模式下不能用该开关关闭这些保护。
 
 上线或变更域名、证书、代理和发布镜像时，将以下检查纳入启用移动验货的门禁。维护态主动封闭业务接口；在既有短时探测窗口内执行检查，失败则恢复维护状态，修好后再开放。
 

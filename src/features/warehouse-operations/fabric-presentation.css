@@ -16,7 +16,7 @@
 .fabric-warehouse-presentation #warehouse-main :is(
   .fabric-master-card-heading, .warehouse-table-heading, .stock-heading,
   .receipt-records-heading, .fabric-order-summary > header, .monthly-heading,
-  .activity-heading, .setup-heading, .dashboard-heading
+  .activity-heading, .setup-heading
 ) {
   padding: var(--fabric-page-heading-space) var(--fabric-page-gutter);
   gap: 16px;
@@ -34,7 +34,7 @@
 .fabric-warehouse-presentation #warehouse-main :is(
   .fabric-master-card-heading, .warehouse-table-heading, .stock-heading,
   .receipt-records-heading, .fabric-order-summary > header, .monthly-heading,
-  .activity-heading, .setup-heading, .dashboard-heading, .fabric-source-placeholder
+  .activity-heading, .setup-heading, .fabric-source-placeholder
 ) :is(h1, h2) {
   margin: 0;
   font-size: var(--fabric-page-title);
@@ -47,7 +47,7 @@
 .fabric-warehouse-presentation #warehouse-main :is(
   .fabric-master-card-heading, .warehouse-table-heading, .stock-heading,
   .receipt-records-heading, .fabric-order-summary > header, .monthly-heading,
-  .activity-heading, .setup-heading, .dashboard-heading
+  .activity-heading, .setup-heading
 ) p {
   margin: 6px 0 0;
   font-size: var(--fabric-body-size);
@@ -202,7 +202,7 @@
   .fabric-warehouse-presentation #warehouse-main :is(
     .fabric-master-card-heading, .warehouse-table-heading, .stock-heading,
     .receipt-records-heading, .fabric-order-summary > header, .monthly-heading,
-    .activity-heading, .setup-heading, .dashboard-heading
+    .activity-heading, .setup-heading
   ) { align-items: flex-start; flex-wrap: wrap; gap: 12px; }
 
   .fabric-warehouse-presentation #warehouse-main :is(.fabric-order-summary > header, .activity-heading) > div { min-width: 0; flex: 1 1 220px; }

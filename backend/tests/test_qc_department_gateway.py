@@ -42,6 +42,37 @@ def install_upstream(monkeypatch):
     return calls
 
 
+@pytest.mark.parametrize('mode', ['enforce', 'legacy'])
+def test_mark_read_follows_inspection_self_review_permission_and_validates_input(monkeypatch, mode):
+    monkeypatch.setenv('AUTHZ_MODE', mode)
+    monkeypatch.setenv('QC_DOSSIER_EMERGENCY_DISABLED','true')
+    with make_client(monkeypatch) as client:
+        install_upstream(monkeypatch)
+        login_as(client,'qc_inspector')
+        health='/api/qc-department/huaxing/api/health'
+        path = 'api/inspection-sheet/review/mark-read'
+        frame = client.get(health).json()['frame_url']
+        entry_id = 'a'*32
+        payload = {'entryIds': [entry_id], 'revisions': {entry_id: 1}}
+
+        def reads_allowed():
+            context = client.get(frame + 'nexus-context.js')
+            return json.loads(context.text.removeprefix('window.__QC_NEXUS = ').removesuffix(';'))['workflow']['reviewReads']
+
+        assert reads_allowed() is True
+        assert client.post(frame+path,json={'entryIds':[entry_id]}).status_code==422
+        assert client.post(frame+path,json={'entryIds':['bad'],'revisions':{'bad':1}}).status_code==422
+        response = client.post(frame + path, json=payload)
+        assert response.status_code == 200 and response.json() == {'read': {}}
+        assert client.post(frame.replace('/huaxing/', '/huadeng/') + path, json=payload).status_code == 403
+
+        grant_permission_override('qc_inspector', 'qc_inspection:result_write',
+                                  effect='deny', factory_id='huaxing', department='qc')
+        frame = client.get(health).json()['frame_url']
+        assert reads_allowed() is (mode == 'legacy')
+        assert client.post(frame + path, json=payload).status_code == (200 if mode == 'legacy' else 403)
+
+
 def test_session_factory_boundary_and_no_local_accounts(monkeypatch):
     with make_client(monkeypatch) as client:
         calls = install_upstream(monkeypatch)
@@ -82,6 +113,32 @@ def test_session_factory_boundary_and_no_local_accounts(monkeypatch):
         assert client.post(base + "api/users", json={"users": []}).status_code == 404
         assert client.post(base + "api/sso-verify", json={}).status_code == 404
         assert len(calls) == before
+
+
+def test_report_photo_scoped_read_only_preview(monkeypatch):
+    with make_client(monkeypatch) as client:
+        install_upstream(monkeypatch)
+        route = 'api/report-workbook/photo?entry=test&revision=2&photo=image'
+        assert client.get('/api/qc-department/huaxing/' + route).status_code == 401
+        login_as(client, 'qc_inspector')
+        base = client.get('/api/qc-department/huaxing/api/health').json()['frame_url']
+        service = importlib.import_module('app.services.qc_monthly_excel')
+        calls = []
+        def approved(*args):
+            calls.append(args)
+            return b'preview', 'image/jpeg'
+        monkeypatch.setattr(service, 'approved_photo', approved)
+        response = client.get(base + route)
+        assert response.content == b'preview' and response.headers['content-type'] == 'image/jpeg'
+        assert response.headers['cache-control'] == 'no-store'
+        head = client.head(base + route)
+        assert head.content == b'' and head.headers['content-length'] == response.headers['content-length']
+        assert client.get(base.replace('/huaxing/', '/huadeng/') + route).status_code == 403
+        assert client.get('/api/qc-department/huaxing/' + route).status_code == 409
+        assert client.get(base + route + '&variant=original').status_code == 422
+        assert client.get(base + route + '&revision=3').status_code == 422
+        assert client.post(base + route).status_code == 405
+        assert calls == [('huaxing', 'test', 2, 'image')] * 2
 
 
 def test_schedule_reads_formal_source_without_importing_or_using_examples(monkeypatch):
@@ -171,6 +228,7 @@ def test_real_node_service_roundtrip_and_private_port(monkeypatch, tmp_path):
     import time
     from pathlib import Path
     from pydantic import SecretStr
+    from test_qc_record_delete import login_qc_test
 
     token = secrets.token_hex(32)
     with socket.socket() as probe:
@@ -198,6 +256,7 @@ def test_real_node_service_roundtrip_and_private_port(monkeypatch, tmp_path):
             assert "users" not in bootstrap.json()
             assert sidecar.post("/api/sso-verify", json={}).status_code == 404
             assert sidecar.post("/api/users?company=hy-huaxing", json={"users": []}).status_code == 404
+        monkeypatch.setenv("QC_RECORD_ADMIN_BOOTSTRAP_SECRET", "QcFixtureOnly-2026")
         with make_client(monkeypatch) as client:
             module = importlib.import_module("app.api.qc_department")
             monkeypatch.setattr(module.settings, "qc_department_url", url)
@@ -230,10 +289,88 @@ def test_real_node_service_roundtrip_and_private_port(monkeypatch, tmp_path):
             login_as(client, "admin")
             admin_base = client.get("/api/qc-department/huaxing/api/health").json()["frame_url"]
             cleared = client.post(admin_base + "api/reference-data/clear", json={})
-            assert cleared.status_code == 200 and cleared.json()["deleted"] == 0
+            assert cleared.status_code == 403
             assert len(client.get(admin_base + "api/bootstrap").json()["records"]) == 1
             other = client.get("/api/qc-department/huakang-a/api/health").json()["frame_url"]
             assert client.get(other + "api/bootstrap").json()["records"] == []
+
+            login_qc_test(client)
+            base = client.get("/api/qc-department/huaxing/api/health").json()["frame_url"]
+            initial = client.get(base + "api/bootstrap").json()
+            assert initial["catalogVersions"] == {"partners": 0, "defectLib": 0}
+            for endpoint, key, existing, added in (
+                ("partners", "partners", initial["partners"], {"name": "测试供应商", "type": "supplier"}),
+                ("defects", "defectLib", initial["defectLib"], {"name": "测试不良项", "enabled": True}),
+            ):
+                route = base + "api/" + endpoint
+                for invalid in [True, -1, "0", None, 10**100]:
+                    assert client.post(route, json={key: existing, "baseRevision": invalid}).status_code == 422
+                new_list = [*existing, added]
+                added_response = client.post(route, json={key: new_list, "baseRevision": 0})
+                assert added_response.status_code == 200, added_response.text
+                assert added_response.json()["revision"] == 1
+                removed = client.post(route, json={key: existing, "baseRevision": 1})
+                assert removed.status_code == 200, removed.text
+                assert removed.json()["revision"] == 2
+                for stale in ({key: new_list, "baseRevision": 1}, {key: new_list}):
+                    assert client.post(route, json=stale).status_code == 409
+                fresh = client.get(base + "api/bootstrap").json()
+                assert fresh[key] == existing and fresh["catalogVersions"][key] == 2
+                restored = client.post(route, json={
+                    key: new_list, "baseRevision": fresh["catalogVersions"][key],
+                    "_qc": {"baseRevision": 999, "actor": ""},
+                })
+                assert restored.status_code == 200, restored.text
+                assert restored.json()["revision"] == 3
+                assert any(entry["name"] == added["name"] for entry in client.get(base + "api/bootstrap").json()[key])
+
+            # A locked legacy row can be retained verbatim while replacing unrelated records.
+            delete_url = base + "api/records/delete"
+            replace_url = base + "api/records/replace"
+            assert stored[0]["status"] is None
+            assert client.post(delete_url, json={"ids": [1]}).status_code == 409
+            assert client.post(replace_url, json={"records": []}).status_code == 409
+            new = {"id": 2, "status": "rejected", "productNo": "ADDED-002"}
+            response = client.post(replace_url, json={"records": [*stored, new]})
+            assert response.status_code == 200, response.text
+            after = client.get(base + "api/bootstrap").json()["records"]
+            assert after[0] == stored[0] and after[1]["productNo"] == "ADDED-002"
+            changed = {**stored[0], "productNo": "OVERWRITE"}
+            assert client.post(replace_url, json={"records": [changed]}).status_code == 409
+            assert client.get(base + "api/bootstrap").json()["records"] == after
+
+            login_as(client, "qc_supervisor")
+            reviewer = client.get("/api/qc-department/huaxing/api/health").json()["frame_url"]
+            returned = client.post(reviewer + "api/workflow/legacy-review", json={
+                "recordId": 1, "updatedAt": stored[0]["updatedAt"], "action": "return", "reason": "补充照片",
+            })
+            assert returned.status_code == 200, returned.text
+            assert returned.json()["status"] == "rejected"
+            login_qc_test(client)
+            base = client.get("/api/qc-department/huaxing/api/health").json()["frame_url"]
+            assert client.post(base + "api/records/delete", json={"ids": [1]}).status_code == 200
+
+            # Exercise the versioned archive through the real API and Node stores.
+            legacy = {"id": 3, "status": "approved", "result": "PASS", "orderNo": "LEGACY-RECEIPT"}
+            assert client.post(base + "api/records", json={"records": [legacy]}).status_code == 200
+            browser_bootstrap = client.get(base + "api/bootstrap?sheetVersions=1").json()
+            assert not {"recordVersions", "recordGenerations", "recordGenerationStarts"} & browser_bootstrap.keys()
+            assert client.post(base + "api/records/archive-sheet", json={"items": []}).status_code in {403, 404}
+            rows = client.get(base + "api/inspection-sheet/review/entries").json()["items"]
+            entry = next(row for row in rows if row.get("legacyId") == 3)
+            request = {"requestKey": secrets.token_hex(16), "entries": [{"id": entry["id"], "revision": entry["revision"]}]}
+            route = base + "api/inspection-sheet/review/approved/delete"
+            deleted = client.post(route, json=request)
+            assert deleted.status_code == 200 and deleted.json()["results"][0]["legacyArchive"] == "archived", deleted.text
+            remaining = client.get(base + "api/bootstrap").json()["records"]
+            assert [row["id"] for row in remaining] == [2]
+            replacement = {**legacy, "orderNo": "REPLACEMENT"}
+            restored = client.post(base + "api/records/replace", json={"records": [*remaining, replacement]})
+            assert restored.status_code == 200, restored.text
+            assert client.post(route, json=request).json()["results"][0]["replayed"] is True
+            assert client.get(base + "api/bootstrap").json()["records"][-1]["orderNo"] == "REPLACEMENT"
+            restored_rows = client.get(base + "api/inspection-sheet/review/entries").json()["items"]
+            assert any(row["poNo"] == "REPLACEMENT" and row["id"] != entry["id"] for row in restored_rows)
     finally:
         child.terminate()
         child.wait(timeout=10)
@@ -402,7 +539,11 @@ def test_historical_return_uses_new_form_with_full_permission_lock_and_attachmen
         original={'id':22,'status':'approved','supplier':'名发','client':'ZURU','date':'2026-04-20','inspDate':'2026-04-20','qty':600,'sampleQty':80,'pass':72,'fail':8,'defectRate':'10.00%','result':'REJ','productNo':'15755','productName':'粉色熊','deliveryNo':'0005501','qc':'原检验员','remark':'原备注','defects':[],'measurements':[],'updatedAt':'old'}
         rows=[deepcopy(original)]
         async def fake(method,path,params,body):
-            if path!='api/health': assert params==[('company','hy-huaxing')]
+            if path != 'api/health':
+                expected = [('company', 'hy-huaxing')]
+                if path == 'api/bootstrap' and ('sheetVersions', '1') in params:
+                    expected.append(('sheetVersions', '1'))
+                assert params == expected
             if method=='POST':
                 for r in json.loads(body).get('records',[]):rows[0]=r
             return httpx.Response(200,json={'records':deepcopy(rows),'nextId':23,'referenceData':{'ids':[22],'count':1},'users':[]})

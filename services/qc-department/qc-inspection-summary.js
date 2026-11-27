@@ -6,6 +6,8 @@
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const display=v=>v===undefined||v===null||v===''?'—':esc(v);
   const time=v=>root.QcInspectionAudit.time(v);
+  const canDelete=()=>Boolean(root.__QC_NEXUS?.workflow?.delete);
+  const requestKey=()=>root.crypto?.randomUUID?.()||Array.from((root.crypto?.getRandomValues?.(new Uint8Array(16))||Array.from({length:16},()=>Math.floor(Math.random()*256))),x=>x.toString(16).padStart(2,'0')).join('');
   const dateSource=row=>({qc_manual:'QC人工填写',schedule:'计划日期补位'}[row.inspectionDateSource]||(row.inspectionDateSource===null?'日期缺失':'历史未标记'));
   let timer,activeDetail=null,activePhoto=null;
   async function api(path,body){
@@ -38,6 +40,7 @@
           </div>
           <div class="qsum-actions">
             <p id="qsum-totals" hidden>审核记录：<strong id="qsum-review-count"></strong> 条</p>
+            ${canDelete()?'<button type="button" class="btn btn-secondary qsum-danger-outline" id="qsum-manage-batches">管理历史导入批次</button>':''}
             <button type="button" class="btn btn-secondary" id="qsum-import">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3h4l4 4v14H7v-4M7 9V3h6v5h5M3 13h11m-4-4 4 4-4 4"/></svg>历史导入
             </button>
@@ -71,6 +74,8 @@
     root.document.getElementById('qsum-next').onclick=()=>{state.filters.page++;void load();};
     root.document.getElementById('qsum-body').onclick=event=>{const button=event.target.closest('[data-summary-id]');if(button)void details(button.dataset.summaryId);};
     root.document.getElementById('qsum-import').onclick=()=>root.document.getElementById('qsum-file').click();
+    const manageBatches=root.document.getElementById('qsum-manage-batches');
+    if(manageBatches)manageBatches.onclick=()=>void openBatchManager();
     root.document.getElementById('qsum-file').onchange=event=>{const file=event.target.files[0];event.target.value='';if(file)void preview(file);};
     root.document.getElementById('qsum-import').hidden=!root.__QC_NEXUS?.summaryImportAllowed;
     controls();
@@ -128,7 +133,7 @@
       if(img.complete&&!img.naturalWidth)show();
     });
   }
-  function photoMarkup(dialog,viewport,img,saveAnnotations){
+  function photoMarkup(dialog,viewport,img,saveAnnotations,guideAllowed){
     const doc=dialog.ownerDocument;
     const shapes=root.QcPhotoShapes,editable=Boolean(saveAnnotations&&shapes);
     const svg=name=>doc.createElementNS('http://www.w3.org/2000/svg',name);
@@ -140,7 +145,8 @@
     const redoStack=[];
     const isDirty=()=>editable&&!shapes.equal(marks,photo?.annotations);
     const toolbar=doc.createElement('div');
-    let undoButton,redoButton,feedback,retryButton;
+    let undoButton,redoButton,feedback,retryButton,guide;
+    const actor=root.__QC_NEXUS?.inspector?.id;
     if(editable){
       toolbar.className='qis-photo-markup-toolbar';
       toolbar.setAttribute('role','group');
@@ -152,12 +158,18 @@
       feedback.hidden=true;
       feedback.innerHTML='<span></span> <button type="button" data-mark-retry hidden>重试</button>';
       viewport.before(toolbar,feedback);
+      if(guideAllowed)guide=root.QcGlassGuide?.photo(toolbar,{actor});
+      dialog.addEventListener('close',()=>guide?.destroy(),{once:true});
       retryButton=feedback.querySelector('[data-mark-retry]');
       retryButton.onclick=saveMarks;
       undoButton=toolbar.querySelector('[data-mark-undo]');
       redoButton=toolbar.querySelector('[data-mark-redo]');
       for(const button of toolbar.querySelectorAll('[data-mark-tool]')){
-        button.onclick=()=>{mode=button.dataset.markTool;controls();};
+        button.onclick=()=>{
+          mode=button.dataset.markTool;
+          if(mode!=='browse')guide?.fade();
+          controls();
+        };
       }
       undoButton.onclick=()=>{
         if(drawing||!marks.length)return;
@@ -271,6 +283,7 @@
           const {mark,bounds}=drawing;
           const dx=(mark.x2-mark.x1)*bounds.width,dy=(mark.y2-mark.y1)*bounds.height;
           if(mark.type==='circle'?Math.abs(dx)>=4&&Math.abs(dy)>=4:Math.hypot(dx,dy)>=4){
+            if(guideAllowed)root.QcGlassGuide?.completePhoto(actor);
             drawing=null;redoStack.length=0;
             editMarks([...marks,mark]);return true;
           }
@@ -280,7 +293,7 @@
     };
   }
 
-  function photoPreview(row,photos,start,detailDialog=null,trigger=root.document.activeElement,saveAnnotations=null){
+  function photoPreview(row,photos,start,detailDialog=null,trigger=root.document.activeElement,saveAnnotations=null,refreshPhotos=null){
     const embedded=row===null;
     const overlay=embedded||!detailDialog;
     if(!photos[start]||(!embedded&&!row.entryId)||(detailDialog&&!detailDialog.isConnected))return;
@@ -300,23 +313,26 @@
     originalDownload.hidden=true;
     el.querySelector('footer').append(originalDownload);
     let actions;
-    if(overlay&&!embedded){
-      el.querySelector('[data-photo-close]').remove();
+    if(overlay){
       actions=root.document.createElement('div');
       actions.className='qis-photo-viewer-actions';
-      for(const [action,label] of [['prev','‹'],['next','›'],['original'],['download'],['retry']]){
-        const control=el.querySelector('[data-photo-'+action+']');
-        if(label)control.textContent=label;
-        actions.append(control);
+      if(embedded)actions.append(el.querySelector('[data-photo-retry]'));
+      else{
+        el.querySelector('[data-photo-close]').remove();
+        for(const [action,label] of [['prev','‹'],['next','›'],['original'],['download'],['retry']]){
+          const control=el.querySelector('[data-photo-'+action+']');
+          if(label)control.textContent=label;
+          actions.append(control);
+        }
+        actions.querySelector('[data-photo-prev]').hidden=actions.querySelector('[data-photo-next]').hidden=photos.length===1;
       }
-      actions.querySelector('[data-photo-prev]').hidden=actions.querySelector('[data-photo-next]').hidden=photos.length===1;
       el.append(actions);
     }
     const updateActions=()=>{if(actions)actions.hidden=[...actions.children].every(control=>control.hidden);};
     root.document.body.append(el);
     let variant='preview',index=start,scale=1,fit=1,x=0,y=0,width=0,height=0,loaded=false,raf=null,closed=false,nativeGesture=null,lastPointer=null;
     const viewport=el.querySelector('.qsum-lightbox-viewport'),img=el.querySelector('img'),error=el.querySelector('[data-photo-error]'),retry=el.querySelector('[data-photo-retry]');
-    const markup=embedded?null:photoMarkup(el,viewport,img,saveAnnotations);
+    const markup=embedded?null:photoMarkup(el,viewport,img,saveAnnotations,row.offerGuide);
     const pointers=new Map(),requestFrame=root.requestAnimationFrame?.bind(root)||((fn)=>root.setTimeout(fn,16));
     function bounds(){
       const w=img.naturalWidth*fit*scale,h=img.naturalHeight*fit*scale;
@@ -347,7 +363,7 @@
       if(variant==='preview')return photo.originalAvailable?'预览图':'预览图 · 原图不可用';
       return loaded?'原始高清图':'正在加载原图…';
     }
-    function show(original=false){
+    function show(original=false,forceReload=false){
       variant=original===true?'original-display':'preview';
       if(closed)return;
       endNativeGesture();loaded=false;pointers.clear();lastPointer=null;scale=1;width=height=0;img.style.visibility='hidden';error.hidden=retry.hidden=true;
@@ -357,9 +373,11 @@
       const originalButton=el.querySelector('[data-photo-original]');
       originalButton.hidden=embedded;
       if(embedded){
+        if(forceReload)img.removeAttribute('src');
         img.src=p.src;
       }else{
         const path='api/inspection-sheet/entries/'+encodeURIComponent(row.entryId)+'/photos/'+encodeURIComponent(p.id);
+        if(forceReload)img.removeAttribute('src');
         img.src=path+(variant==='preview'?'':'?variant='+variant);
         originalDownload.hidden=!p.originalAvailable;
         originalDownload.href=path+'?variant=original';
@@ -450,7 +468,21 @@
     el.querySelector('[data-photo-prev]').onclick=()=>stepPhoto(-1);
     el.querySelector('[data-photo-next]').onclick=()=>stepPhoto(1);
     el.querySelector('[data-photo-minus]').onclick=()=>zoom(scale-.25);el.querySelector('[data-photo-plus]').onclick=()=>zoom(scale+.25);
-    el.querySelector('[data-photo-fit]').onclick=reset;retry.onclick=()=>show(variant!=='preview');el.querySelector('[data-photo-original]').onclick=()=>show(variant==='preview');
+    let retrying=false;
+    async function retryPhoto(){
+      if(closed||retrying)return;
+      const requestedIndex=index;
+      if(embedded&&typeof refreshPhotos==='function'){
+        retrying=true;retry.disabled=true;
+        try{await refreshPhotos(photos,requestedIndex);}
+        catch{/* Keep the retry button available if refreshing the preview fails. */}
+        finally{retrying=false;if(!closed)retry.disabled=false;}
+        if(closed||index!==requestedIndex)return;
+      }
+      show(variant!=='preview',true);
+      if(embedded)viewport.focus({preventScroll:true});
+    }
+    el.querySelector('[data-photo-fit]').onclick=reset;retry.onclick=()=>{void retryPhoto();};el.querySelector('[data-photo-original]').onclick=()=>show(variant==='preview');
     el.addEventListener('keydown',event=>{if(event.key==='ArrowRight'&&index<photos.length-1){event.preventDefault();stepPhoto(1);}else if(event.key==='ArrowLeft'&&index>0){event.preventDefault();stepPhoto(-1);}});
     const observer=root.ResizeObserver?new root.ResizeObserver(resize):null;observer?.observe(viewport);
     const retryMarks=()=>markup?.retry();
@@ -468,6 +500,7 @@
     el.addEventListener('close',cleanup);detailDialog?.addEventListener('close',closePhoto,{once:true});
     activePhoto={el,close:closePhoto,markup};
     el.showModal();show();
+    return el;
   }
   const dossierLabels={customer_q:'客 Q',line_q:'行 Q',requested_ship_date:'客户要求交期',received_date:'来单日期',packaging:'包装方式',standard:'国家 / 客户标准',contact:'联系人',date_code:'日期码',production_no:'生产参考号',label:'产品或包装标签',customer_label:'外箱贴纸',remarks:'业务备注',note:'订单备注',product_name_zh:'中文品名',product_name_en:'英文品名',contract_no:'合同号',po_no:'客户 PO',units_per_carton:'每箱数量',carton_count:'箱数',country:'出口国原始值',id:'订单标识',reference_no:'参考号',product_no:'货号',quantity:'订单数量',shipped_quantity:'已走货数量',customer_name:'客户',customer_code:'客户编码',status:'业务订单状态',result:'验货结果',remark:'验货备注',inspectionProblem:'验货问题',improvement:'改善措施',firstResponsible:'第一责任人',secondResponsible:'第二责任人',otherRemark:'其他备注',actualDate:'实际验货日期',actualQuantity:'实际数量',reportStatus:'报告状态',contractNo:'合同号',shipDate:'走货日期'};
   const hasBusinessValue=value=>value!==null&&value!==undefined&&(typeof value!=='string'||value.trim()!=='')&&(typeof value!=='object'||Object.values(value).some(hasBusinessValue));
@@ -671,9 +704,14 @@
         '" aria-selected="'+(key==='qc')+'" tabindex="'+(key==='qc'?0:-1)+'" data-dossier-tab="'+key+'">'+title+'</button>').join('');
       const content = groups.map(([key]) => '<section class="qsum-dossier-panel" role="tabpanel" id="qsum-panel-'+key+
         '" aria-labelledby="qsum-tab-'+key+'" '+(key==='qc'?'':'hidden')+'>'+panels[key]+'</section>').join('');
+      const adminZone=canDelete()
+        ?(row.sourceKind==='history'
+          ?'<div class="qsum-admin-zone qsum-admin-danger"><div class="qsum-admin-info"><strong>数据管理（历史工作簿导入）</strong><span>'+(row.sourceFilename?'来源文件：'+esc(row.sourceFilename):'仅删除此历史导入记录，保留后台变更留痕')+'</span></div><div class="qsum-admin-actions">'+(row.historyBatchId?'<button type="button" class="btn btn-secondary" data-rollback-same-batch>撤回同批次记录</button>':'')+'<button type="button" class="btn qsum-danger-outline" data-delete-history-record>删除这条历史汇总</button></div></div>'
+          :'<div class="qsum-admin-zone qsum-admin-guard"><div class="qsum-admin-info"><strong>删除审核入账记录</strong><span>请在「审核中心 → 已审核」选择要删除的记录。删除后会同步撤出验货汇总和报表。</span></div><div class="qsum-admin-actions"><button type="button" class="btn btn-secondary" data-goto-review-approved>前往已审核 →</button></div></div>')
+        :'';
       body.innerHTML='<div class="qrd-toolbar">'+identity+
         '<div class="qsum-dossier-tabs" role="tablist" aria-label="验货资料分类">'+tabs+'</div></div>'+
-        '<div class="qrd-content">'+content+'</div>';
+        '<div class="qrd-content">'+content+'</div>'+adminZone;
       const scroller = body.querySelector('.qrd-content');
       const select = key => {
         body.querySelectorAll('[data-dossier-tab]').forEach(button => {
@@ -688,9 +726,96 @@
       };
       body.querySelectorAll('[data-dossier-tab]').forEach(button=>{button.onclick=()=>select(button.dataset.dossierTab);button.onkeydown=event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const keys=groups.map(g=>g[0]),i=keys.indexOf(button.dataset.dossierTab),key=event.key==='Home'?keys[0]:event.key==='End'?keys.at(-1):keys[(i+(event.key==='ArrowLeft'?3:1))%4];select(key);body.querySelector('[data-dossier-tab="'+key+'"]').focus();};});
       bindPhotoErrors(el);body.querySelectorAll('[data-photo]').forEach(button=>button.onclick=()=>photoPreview(row,photos,Number(button.dataset.photo),el));
+      const delHistBtn=body.querySelector('[data-delete-history-record]');
+      if(delHistBtn)delHistBtn.onclick=()=>confirmDeleteHistoryRecord(row,closeDetail);
+      const rollbackBtn=body.querySelector('[data-rollback-same-batch]');
+      if(rollbackBtn)rollbackBtn.onclick=()=>confirmRollbackBatch({id:row.historyBatchId,filename:row.sourceFilename||'历史导入批次'},async()=>{closeDetail();await load();});
+      const gotoReviewBtn=body.querySelector('[data-goto-review-approved]');
+      if(gotoReviewBtn)gotoReviewBtn.onclick=()=>{closeDetail();root.showPage?.('review');void root.QcInspectionSheet?.loadReview?.('approved');};
     }catch(error){if(!closed){body.innerHTML='<p role="alert">'+esc(error.name==='AbortError'?'读取超时，请重试':error.name==='TypeError'?'资料读取失败，请检查网络后重试':error.message)+'</p><button class="btn btn-secondary" data-dossier-retry>重试</button>';body.querySelector('[data-dossier-retry]').onclick=()=>{closeDetail();void details(id);};}}
     finally{root.clearTimeout(timeout);}
   }
+  function confirmDeleteHistoryRecord(row,closeParent){
+    if(!canDelete()||state.busy)return;
+    const el=dialog('确认删除历史汇总记录',
+      `<p>即将从验货汇总移除以下历史导入记录：</p>
+       <p class="qsum-note"><strong>${esc(row.customer||'未填客户')} · ${esc(row.poNo||'—')} · ${esc(row.productNo||'—')}</strong><br>验货日期：${display(row.reportDate??row.inspectionDate)} · 结果：${display(row.result)}${row.sourceFilename?' · 来源：'+esc(row.sourceFilename):''}</p>
+       <p class="qsum-note">原记录快照将保留在后台审计变更表中，不会影响业务部「客排期」或审核中心已确认记录。</p>
+       <label class="qsum-reason-label">删除原因（选填）<textarea data-delete-reason rows="2" maxlength="2000" placeholder="例如：重复导入 / 历史错行"></textarea></label>
+       <p data-feedback role="status"></p>
+       <div class="qsum-dialog-actions"><button type="button" class="btn btn-secondary" data-cancel>取消</button><button type="button" class="btn qsum-danger-solid" data-execute>确认删除</button></div>`);
+    const button=el.querySelector('[data-execute]'),cancel=el.querySelector('[data-cancel]'),feedback=el.querySelector('[data-feedback]'),reasonInput=el.querySelector('[data-delete-reason]');
+    cancel.onclick=()=>{if(!state.busy)el.close();};
+    let req=null;
+    button.onclick=async()=>{
+      if(state.busy)return;state.busy=true;button.disabled=true;cancel.disabled=true;el.querySelector('[data-close]').disabled=true;if(reasonInput)reasonInput.disabled=true;
+      try{
+        if(!req)req={requestKey:requestKey(),reason:(reasonInput?.value||'').trim()};
+        await api('records/'+encodeURIComponent(row.id)+'/delete',req);
+        el.close();closeParent?.();await load();
+        root.showToast?.('已删除该条历史汇总记录','success');
+      }catch(error){
+        feedback.textContent=error.message;feedback.classList.add('qsum-error');
+        button.disabled=false;cancel.disabled=false;el.querySelector('[data-close]').disabled=false;
+      }finally{state.busy=false;}
+    };
+  }
+
+  function confirmRollbackBatch(batch,onDone){
+    if(!canDelete()||state.busy)return;
+    const countNote=typeof batch.activeCount==='number'?`（当前生效 ${batch.activeCount} 条）`:'';
+    const el=dialog('确认撤回历史导入批次',
+      `<p>即将撤回整个历史导入批次：<strong>${esc(batch.filename||batch.id)}</strong>${countNote}</p>
+       <p class="qsum-note">该批次下的所有历史导入记录将从验货汇总中移除，原文件与变更留痕保留在后台，不影响审核中心同步的记录及业务订单。</p>
+       <label class="qsum-reason-label">撤回原因（选填）<textarea data-delete-reason rows="2" maxlength="2000" placeholder="例如：导入文件版本有误 / 重复导入"></textarea></label>
+       <p data-feedback role="status"></p>
+       <div class="qsum-dialog-actions"><button type="button" class="btn btn-secondary" data-cancel>取消</button><button type="button" class="btn qsum-danger-solid" data-execute>确认撤回该批次</button></div>`);
+    const button=el.querySelector('[data-execute]'),cancel=el.querySelector('[data-cancel]'),feedback=el.querySelector('[data-feedback]'),reasonInput=el.querySelector('[data-delete-reason]');
+    cancel.onclick=()=>{if(!state.busy)el.close();};
+    let req=null;
+    button.onclick=async()=>{
+      if(state.busy)return;state.busy=true;button.disabled=true;cancel.disabled=true;el.querySelector('[data-close]').disabled=true;if(reasonInput)reasonInput.disabled=true;
+      try{
+        if(!req)req={requestKey:requestKey(),reason:(reasonInput?.value||'').trim()};
+        const saved=await api('history/'+encodeURIComponent(batch.id)+'/rollback',req);
+        el.close();
+        if(onDone)await onDone(saved);
+        root.showToast?.(`已撤回历史导入批次（移除 ${saved.rolledBackCount} 条）`,'success');
+      }catch(error){
+        feedback.textContent=error.message;feedback.classList.add('qsum-error');
+        button.disabled=false;cancel.disabled=false;el.querySelector('[data-close]').disabled=false;
+      }finally{state.busy=false;}
+    };
+  }
+
+  async function openBatchManager(){
+    if(!canDelete())return;
+    const el=dialog('管理历史导入批次','<p role="status">正在读取历史导入批次…</p>');
+    const body=el.querySelector('.qwf-dialog-body');
+    async function refreshList(){
+      try{
+        const data=await api('history/batches');
+        const items=data.items||[];
+        if(!items.length){
+          body.innerHTML='<p class="qsum-note">当前厂区暂无已入库的历史工作簿导入批次。</p>';
+          return;
+        }
+        body.innerHTML='<p class="qsum-note">此处仅管理通过「历史导入」入库的 Excel 批次，不影响审核中心确认的正式记录。</p><div class="qsum-table-wrap"><table class="qsum-table"><thead><tr><th>文件名</th><th>导入时间（北京时间）</th><th>总行数</th><th>当前生效</th><th>状态</th><th>操作</th></tr></thead><tbody>'+
+          items.map(b=>`<tr><td>${esc(b.filename)}</td><td>${esc(time(b.committedAt||b.createdAt))}</td><td>${esc(b.totalRows)}</td><td>${esc(b.activeCount)}</td><td><span class="qsum-state">${b.status==='rolled_back'?'已撤回':'已生效'}</span></td><td>${b.status==='committed'&&b.activeCount>0?`<button type="button" class="btn qsum-danger-outline" data-batch-rollback="${esc(b.id)}">撤回该批次</button>`:'<span class="qsum-muted">—</span>'}</td></tr>`).join('')+
+          '</tbody></table></div>';
+        body.querySelectorAll('[data-batch-rollback]').forEach(btn=>{
+          btn.onclick=()=>{
+            const batch=items.find(x=>x.id===btn.dataset.batchRollback);
+            if(batch)confirmRollbackBatch(batch,async()=>{await refreshList();await load();});
+          };
+        });
+      }catch(error){
+        body.innerHTML='<p role="alert" class="qsum-error">'+esc(error.message)+'</p>';
+      }
+    }
+    await refreshList();
+  }
+
   async function preview(file){
     if(state.busy)return;state.busy=true;message('正在只读解析历史工作簿，原文件不会被覆盖…');
     try{
@@ -707,9 +832,9 @@
       message('历史预览完成，请核对后确认导入。');
     }catch(error){message(error.message,true);}finally{state.busy=false;}
   }
-  function openWorkbookPhotos(images,start,workbook){
-    const photos=images.map(image=>({src:image.currentSrc||image.src,name:'现场照片 · '+image.closest('td').dataset.addr}));
-    photoPreview(null,photos,start,workbook,images[start].closest('button'));
+  function openWorkbookPhotos(images,start,workbook,refreshPhotos=null){
+    const photos=images.map(image=>({src:image.getAttribute('src')||image.currentSrc||image.src,name:'现场照片 · '+image.closest('td').dataset.addr}));
+    photoPreview(null,photos,start,workbook,images[start].closest('button'),null,refreshPhotos);
   }
   root.QcInspectionSummary={load,openPhoto:photoPreview,openWorkbookPhotos,get busy(){return state.busy;},get unsavedPhotoMarks(){return Boolean(activePhoto?.markup?.pending);}};
 })(window);

@@ -1,33 +1,49 @@
 # Royal Regent Nexus 设计系统规范
 
-> 版本：V2.0 · 更新：2026-11-22 · 方向：Apple VisionOS 空间层级<br>
+> 版本：V3.0 · 更新：2026-11-23 · 方向：高审美、场景化设计与独立设计评审<br>
 > 适用：主站前端、共享组件、业务工作区与打印视图。模块局部规则见第 15 节索引。
 
 ## 1. 文档目标与维护规则
 
-本文是全局设计宪章，只记录跨模块、长期有效的规则：
-- **目标规范 vs 当前基线**：新页面和实质重构遵守目标规范；旧页面不批量重写，触及时收敛。Token 值和组件 API 以代码为准，设计方向以本文为准，修改其一时同步另一方。
-- **严禁流水账**：单模块布局、列宽、文案和特有交互写入 `docs/frontend/exceptions/<模块>.md` 或模块 `UI_SPEC.md`，**不得追加到本文**。全文控制在 **300 行以内**。
+本文是跨模块、长期有效的设计宪章。**视觉规范用于提高设计质量，不是固定页面模板，也不是视觉表现的上限。**
+
+- **硬规则（MUST）**：业务数据与状态真实、权限/厂区隔离、语义及操作合同正确、可访问性、性能和稳定性。任何视觉方案不得突破。
+- **设计默认值（DEFAULT）**：品牌语义、空间层级、字号、间距、色彩、动效、共享组件等是起点，不是限制创意的上限。可按场景调整；在 UI 简报中说明有意义的偏离及验收依据，不必为授权范围内的局部视觉决策逐项请示。
+- **自主设计空间（FREE）**：布局构图、业务专属组件、装饰图形、SVG、图标组合、渐变、数据可视化、叙事、交互动效可独立设计。严禁以复用为由机械复制旧页面或降低视觉目标。
+- **目标规范 vs 当前基线**：新页面及实质重构遵守本版本；旧页面不批量重写，触及范围内逐步改善。Token 值和组件 API 以代码为准；设计方向以本文为准，不把尚未实现的设计能力当作已存在。
+- **维护**：全局规则保留在本文，单模块布局、列宽、文案和特有交互写入 `docs/frontend/exceptions/<模块>.md` 或模块 `UI_SPEC.md`。全文目标控制在 300 行以内，不追加任务日志。
 
 ## 2. 设计原则
 
-1. **空间层级**：用 L0–L3 四层材质、1px 半透明高光描边、层级阴影和克制环境光晕建立景深，不靠堆边框和灰底。
-2. **极简呼吸感**：每屏只有一个视觉焦点和一个主操作；分组靠留白与字重，不靠分割线墙；宁可滚动，绝不挤压。
-3. **物理弹簧动效**：采用弹簧曲线，有惯性、可中断、从触发点出发并沿原路返回；动效只解释空间与状态关系。
-4. **生命力微交互**：所有可交互元素在悬停、按压、聚焦、加载与成功时提供即时（≤100ms 响应）而细腻的反馈。
-5. **原语优先**：优先组装共享原语，禁止裸写原生控件和一次性样式。
-6. **业务真实不让步**：视觉升级不改变字段语义、权限、厂区隔离和状态流转；先展示中文业务名，状态必须可信且不仅靠颜色区分。
+1. **高审美目标**：成品须具备鲜明的视觉层级、精致排版、构图张力、连贯交互和适合业务的辨识度。功能正确只是起点；不能将通用后台模板或页面骨架作为新模块最终成品。
+2. **空间与材质**：以 Apple VisionOS 的空间层级、iOS 的流畅反馈为灵感，用 L0–L3、光影、材质、图形与留白建立层次；不要求每个页面长成同一种风格。
+3. **内容驱动布局**：先理解岗位、主任务与真实字段，再决定构图、密度、信息优先级和独立操作区。允许多个有清晰层级的工作区及主操作，不为留白牺牲高频工作效率。
+4. **原语复用、构图自由**：优先复用可靠的交互与语义基础；业务专属展示、图表、工作区和组合组件可自主构建，不受通用 Card / SectionPanel 模板限制。
+5. **动效与生命力**：根据场景选择表现力度，使用有目的的弹簧、形变、状态衔接与反馈；低延迟、可中断、支持降级，不阻塞操作。
+6. **真实业务不让步**：保留中文业务名、字段含义、权限、厂区隔离与状态流转；不虚构数据或操作能力。
 
-**明确拒绝老式 ERP 观感**：灰底灰框表格墙、粗边框 fieldset、密不透风的表单、工程防御条占领主视区、瞬切或线性动画。
+### 2.1 场景选择（可组合，非固定模板）
+
+| 场景 | 适用方向 | 视觉与交互重点 |
+| --- | --- | --- |
+| Immersive 沉浸式 | 集团/部门门户、认证、品牌入口 | 大幅构图、品牌色谱、渐变、分层 SVG、叙事、精致入场 |
+| Intelligence 智能驾驶舱 | 总览、统计、生产监控 | 真实 KPI、趋势、比较、数据图形、主次指标与异常洞察 |
+| Precision 精密工作台 | 排产、仓库、订单、IAM、QC | 高密度、表格/甘特/分栏、批量与键盘操作；精致而不干扰 |
+| Control 设备控制台 | UV、3D、设备监控 | 实时设备状态、任务队列、进度、异常与安全操作反馈 |
+| Companion 智能协作 | 成员、消息、助手、通知 | 自然内容流、柔和层级、上下文面板、精致的消息与状态反馈 |
+
+选择与实际任务相符的主场景及必要的次场景；允许混合与原创布局，不强制附加图表、Hero、卡片或装饰。拒绝老式 ERP 表格墙、无层次的白卡堆叠、笼统标题加空白表格、空洞装饰与无法操作的视觉假功能；精密工作台中的必要业务表格不属于反模式。
 
 ## 3. 技术与样式权威层级
 
-- **技术基线**：Vue 3 + TS + Vite + Tailwind CSS 4.3（`@tailwindcss/vite`，CSS-first，**无 `tailwind.config.js` / PostCSS**）+ `reka-ui` / `shadcn-vue` + CVA / `clsx` / `tailwind-merge` + `@lucide/vue`。`src/style.css` 用 `source(none)` + `@source` 限定扫描 `src/` 与 `index.html`，以 `@theme inline static` 保留 token；`npm run check:tailwind-sources` 校验边界。`components.json` 仅为生成器配置（非运行时字体真相）。不为视觉效果新增动画、组件或字体依赖。
-- **样式权威顺序（高→低）**：① `src/style.css`（全局 token、`.surface-l1` / `.glass-chrome` / `.glass-float` 材质类与壳）→ ② `src/components/ui/`（16 套交互原语，支持 `@/components/ui` 或子目录导入）→ ③ `src/components/common/`（业务组合）→ ④ 组件内 Tailwind 类 → ⑤ 第 15 节登记的模块命名空间样式 → ⑥ 单文件 scoped CSS。
+- **技术基线**：Vue 3 + TS + Vite + Tailwind CSS 4.3（`@tailwindcss/vite`，CSS-first，**无 `tailwind.config.js` / PostCSS**）+ `reka-ui` / `shadcn-vue` + CVA / `clsx` / `tailwind-merge` + `@lucide/vue`。`src/style.css` 用 `source(none)` + `@source` 限定扫描 `src/` 与 `index.html`，以 `@theme inline static` 保留 token；`npm run check:tailwind-sources` 校验边界。`components.json` 仅为生成器配置（非运行时字体真相）。优先现有能力与 CSS / SVG / WAAPI；不为模板或装饰盲目新增依赖。确有显著收益且现有能力不足时，提出成本、性能、兼容、安全与回退依据，遵循任务授权决定是否引入。
+- **共享设计资产优先参考（不是 CSS 层叠优先级，也不限制局部创新）**：① `src/style.css`（全局 token、`.surface-l1` / `.glass-chrome` / `.glass-float` 材质类与壳）→ ② `src/components/ui/`（16 套交互原语，支持 `@/components/ui` 或子目录导入）→ ③ `src/components/common/`（业务组合）→ ④ 组件内 Tailwind 类 → ⑤ 第 15 节登记的模块命名空间样式 → ⑥ 单文件 scoped CSS。
 
 ## 4. 品牌与视觉基础
 
-性格：精确、通透、轻盈、现代、可信。主色为偏冷深青绿，大面积用低饱和冷白中性色，品牌色仅用于主操作、选中态与点睛。顶栏与登录页统一使用 `/brand/huadeng_group_dynamic_logo_topbar.svg`（保持比例 `object-contain`，不重绘/不拉伸，作为可点击首页入口；深底先验对比度）。
+品牌性格：精确、通透、现代、可信，同时允许有张力、富有层次的模块表达。深青绿、冷白中性色为全站基础；场景需要时可扩展主题色、低饱和或高对比重点区、渐变、工业插画、图标、数据分类色、暗色 Hero 等，在模块作用域内用有意义的 token 或 CSS 变量管理。保持品牌识别、状态语义与真实背景对比度，不把局部主题外溢到全站。
+
+顶栏与登录页统一使用 `/brand/huadeng_group_dynamic_logo_topbar.svg`（保持比例 `object-contain`，不重绘/不拉伸，作为可点击首页入口；深底先验对比度）。
 
 ## 5. 颜色系统
 
@@ -41,7 +57,7 @@
 | 次要 | `--secondary` / `--muted` / `--muted-foreground` | `#ebf4f5` / `#ecf3f5` / `#5a6c74` | 次级面、弱化区、辅文 |
 | 交互 | `--accent` / `--accent-foreground` / `--destructive` | `#e2f3f0` / `#00312c` / `#e7000b` | Hover、轻强调、破坏/错误 |
 | 线条 | `--border` / `--input` / `--ring` | `#d5e0e2` / `#d1dde0` / `#148d7f` | 边框、输入边框、焦点环 |
-| 光晕 | `--ambient-glow-primary` / `--ambient-glow-secondary` | 青绿 22% / 冷蓝 16% | 画布层环境光晕（单屏 ≤2 团） |
+| 光晕 | `--ambient-glow-primary` / `--ambient-glow-secondary` | 青绿 22% / 冷蓝 16% | 画布层环境光晕（常用 1–2 团，按场景调整） |
 | 玻璃面 | `--glass-surface-thin` / `--glass-surface-chrome` / `--glass-surface-float` | 白 56% / 72% / 82% | 轻薄 / 壳层 / 浮层底色 |
 | 模糊 | `--glass-blur-sm` / `--glass-blur-md` / `--glass-blur-lg`、`--glass-saturate` | 12 / 20 / 32px、180% | `backdrop-blur-glass-*` 与增艳 |
 | 描边 | `--glass-stroke` / `--glass-stroke-subtle` / `--glass-highlight` | 白 55% / 墨 8% / 顶 1px 内光 | 玻璃高光描边、内容细边 |
@@ -50,61 +66,72 @@
 ### 5.2 状态色与用色规则
 
 - 六档状态色（优先复用 `StatusPill`）：**Teal**（当前/进行中）、**Blue**（信息/同步）、**Amber**（警告/待确认，非失败）、**Red**（错误/破坏）、**Emerald**（成功/完成）、**Slate**（中性/只读）。
-- 新代码只用语义与空间 token，禁硬编码 hex；每操作区仅一个主按钮；红只用于错误与破坏；避免彩虹渐变、霓虹光和大色块；`--chart-1..5` 当前为灰阶，彩色图表须自带图例与对比度验证；`prefers-reduced-transparency: reduce` 自动回退玻璃与光晕。
+- 新代码优先语义与空间 token；局部视觉主题、品牌图形和数据分类可建立作用域内的命名 token（含合理渐变、色谱和大色块），不污染全局状态语义。红色错误/危险含义明确；同组操作明确主次。`--chart-1..5` 当前为灰阶，允许独立的语义/分类调色板，验证图例、对比度与非颜色区分；支持 `prefers-reduced-transparency: reduce` 实色回退。
 
 ## 6. 字体与排版
 
-字体栈：`"Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif`。层级靠字号、字重（**仅用 400 / 500 / 600**）、字距与留白拉开，不靠颜色。
+默认字体栈：`"Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif`。以字号、字重、字距、颜色对比与留白形成清晰的阅读顺序。400 / 500 / 600 为业务常用字重；品牌标题、重点数字可使用 700 或其他适当字重、字形及字号。无明确收益不新增字体依赖。
 
-| 层级 | 目标规范 | 场景 |
+| 层级 | 默认参考 | 场景 |
 | --- | --- | --- |
-| 页面标题 H1 | `clamp(1.75rem, 2.6vw, 2.5rem)`、600、`-0.02em` | 每页唯一 H1 |
-| 关键指标 | `text-4xl`、600、`tabular-nums`、`tracking-tight` | KPI 数字 |
-| 面板 / 小节 | H2 `18px` 600；H3 `15–16px` 600 | 区块与子标题 |
-| 正文 / 辅文 | 正文 `14–15px` 行高 `1.6`；辅文 `12–13px` `text-muted-foreground` | 表格、说明、来源时间 |
-| Eyebrow | `11px`、600、大写、`0.08em`（仅英文） | 页面分类标签 |
+| 页面标题 H1 | `clamp(1.75rem, 2.6vw, 2.5rem)`、600、`-0.02em` | 保持每页语义 H1，视觉尺寸按构图 |
+| 关键指标 | `text-4xl`、600、`tabular-nums`、`tracking-tight` | KPI 或数据焦点 |
+| 面板 / 小节 | H2 18px 600；H3 15–16px 600 | 区块与子标题 |
+| 正文 / 辅文 | 正文 14–15px、行高 1.6；辅文 12–13px | 表格、说明、来源时间 |
+| Eyebrow | 11px、600、大写、0.08em（仅英文） | 页面分类标签 |
 
-数字、编号、金额、百分比、时间一律 `tabular-nums`；正文不用 10–11px；截断值须可通过 Tooltip 或详情查看完整内容。
+数字、编号、金额、百分比、时间优先 `tabular-nums`；业务正文不能为追求密度而不可读。截断关键值须有键盘可达的完整内容查看方式。
 
 ## 7. 空间层级：材质、圆角与阴影
 
-| 层 | 适用对象 | 表面与材质 | 描边 | 阴影 | 圆角 |
-| --- | --- | --- | --- | --- | --- |
-| **L0 画布** | 页面背景 | `--background` + ≤2 团环境光晕 | 无 | 无 | — |
-| **L1 内容** | 卡片、表格、表单、详情正文 | **实色** `bg-card` | 1px `--glass-stroke-subtle` | `shadow-elevation-1` | 面板 `rounded-2xl`、内卡 `rounded-xl` |
-| **L2 壳层** | 顶栏、侧栏、工具条、吸顶表头框、分段控件 | `--glass-surface-chrome` + `backdrop-blur-glass-md` + `saturate(var(--glass-saturate))` | 1px `--glass-stroke` + `--glass-highlight` | 吸顶/悬浮 `shadow-elevation-2` | 随位置 |
-| **L3 浮层** | Dialog、Drawer、Popover、菜单、Toast、命令面板 | `--glass-surface-float` + `backdrop-blur-glass-lg` | 同 L2 | `shadow-elevation-3` | `rounded-2xl`～`rounded-3xl` |
+四层材质是默认空间语言，不要求每个页面必须使用全部层级或同一圆角、阴影组合。
 
-- **毛玻璃铁律**：只用于 L2、L3；**表格行、长列表、表单字段与大面积滚动区禁止 `backdrop-filter`**；同视口叠加模糊层 ≤2；玻璃下须有可感知背景或光晕，且实测正文对比度 ≥4.5:1。
-- **圆角与阴影**：基础 `--radius: 10px`（控件 `rounded-lg` 10px、内卡 `rounded-xl` 14px、面板/浮层 `rounded-2xl` 16px、大浮层 `rounded-3xl` 24px、Pill/头像 `rounded-full`）；嵌套圆角满足“内圆角 = 外圆角 − 内边距”。阴影只用 `shadow-elevation-1/2/3`（大而淡，不替代描边与焦点）。旧 `.enterprise-panel` 等继续兼容，新页优先按上表构建。
+| 层 | 适用对象 | 默认材质 | 描边 / 阴影 / 圆角 |
+| --- | --- | --- | --- |
+| L0 画布 | 页面背景 | `--background`，按场景配置环境光晕或图形 | 无 |
+| L1 内容 | 卡片、表格、表单、详情正文 | `bg-card` 实色；允许局部专题展示面 | `--glass-stroke-subtle` / `shadow-elevation-1` / 面板 16px、内卡 14px |
+| L2 壳层 | 顶栏、侧栏、工具条、吸顶表头框、分段控件 | `--glass-surface-chrome` + `backdrop-blur-glass-md` + `saturate(var(--glass-saturate))` | `--glass-stroke`、`--glass-highlight` / `shadow-elevation-2` |
+| L3 浮层 | Dialog、Drawer、Popover、菜单、Toast、命令面板 | `--glass-surface-float` + `backdrop-blur-glass-lg` | 同 L2 / `shadow-elevation-3` / 16–24px |
+
+- **材质与性能**：玻璃优先用于壳层、浮层；沉浸式 Hero、小范围装饰或独立低频面板也可使用可控材质。表格行、长列表、表单字段、大面积高频滚动区禁止 `backdrop-filter`。默认同视口叠加模糊层不超过 2 层；任何例外须验证真实滚动性能、对比度和实色回退。
+- **圆角与阴影**：默认 `--radius: 10px`（控件 10px、内卡 14px、面板 16px、大浮层 24px），优先用统一 elevation token；允许按场景建立局部材质、圆角、阴影和高光变量。避免无意义的多层边框，不要求固定卡片嵌套数量；以可读性、信息分组和视觉清晰度验收。旧 `.enterprise-panel` 兼容，不能因其存在而降低新页目标。
 
 ## 8. 应用壳与呼吸感布局
 
-- **标准壳**：`AppShell` + 吸顶 `TopBar`（移动 64px，`sm` 起 72px）+ `SidebarNav`（移动抽屉 ≤300px，`lg` 88px 图标栏，`2xl` 260px 展开），属于 L2 壳层；主内容最大 1720px，横向内边距 16→40px，最小视口 320px。标准骨架：`app-page space-y-12` + `PageHeader` + `SectionPanel`。
-- **呼吸感间距（4px 基准）**：图标文字 `8px`、控件组 `8–12px`、表单字段 `16–20px`、卡片内边距移动 `20px` / 桌面 `24–32px`、同级卡片 `16–24px`、大区块 `40–64px`（`space-y-10`～`16`）、页面上下 `32–48px`。首屏仅放决策信息，卡片嵌套 ≤2 层；高密度工作区内部可紧凑但外围留白、数据行高 ≥40px。
-- **响应式断点（移动优先）**：`<640px` 单列抽屉、`sm 640px` 双列小表单、`md 768px` 中密度、`lg 1024px` 桌面侧栏/双栏、`xl 1280px` 操作并排、`2xl 1536px` 展开侧栏。仅数据工作区可横向滚动，禁止整页横滚；容器决定分栏时优先用 Container Query。
-- **全页路由**（`meta.fullPage = true`）：须自备身份标识、键盘焦点、窄屏降级及一致的字体与状态语义；已认证业务全页须提供返回入口与厂区/权限上下文；全页不是另造品牌的许可。
+- **应用壳**：正常业务路由保留 `AppShell`、`TopBar`、`SidebarNav` 和身份/厂区/导航上下文；现有壳层尺寸以源码为准（顶栏移动 64px、sm 起 72px；侧栏移动抽屉 ≤300px、lg 88px、2xl 260px；默认内容最大 1720px）。`app-page`、`PageHeader`、`SectionPanel` 是可复用起点，**不是强制页面骨架**。允许有依据的宽工作区、非对称网格、Bento、分栏、时间轴、看板、流程图、甘特、嵌入式详情等；不擅自修改全局壳或相邻模块。
+- **密度按场景选择（4px 基准，以下是参考范围）**：
+
+| 密度 | 区块间距 | 面板内边距 | 数据行参考 | 适用 |
+| --- | --- | --- | --- | --- |
+| Compact 紧凑 | 12–24px | 12–16px | 32–40px | 高频桌面工作台、表格、排产 |
+| Balanced 均衡 | 24–40px | 16–24px | 40–48px | 通用业务、设备、协作 |
+| Expressive 舒展 | 40–64px | 24–32px | 按内容 | 门户、驾驶舱、品牌展示 |
+
+紧凑密度不降低可访问名称、焦点与触控可用性；同一页面可在工作区与摘要区使用不同密度。首屏保留必要决策信息与高频操作，不追求大面积无意义空白。每个独立操作区明确主次操作；允许多个独立任务并存，避免同一动作组的竞争与误操作。
+- **响应式断点（移动优先）**：<640px 单列/抽屉、sm 640px、md 768px、lg 1024px、xl 1280px、2xl 1536px 为默认参考；容器决定分栏时优先 Container Query。最低普通视口 320px；数据工作区可局部横向滚动或提供明确的窄屏降级策略，禁止非预期整页横滚。固定宽度工作区记录最低宽度及降级方式。
+- **全页路由**（`meta.fullPage = true`）：须自备身份标识、键盘焦点、窄屏降级及一致的字体与状态语义；已认证业务全页须提供返回入口与厂区/权限上下文。
 
 ## 9. 原语与组件规范
 
-**组装顺序**：① `src/components/ui/`（已沉淀 `Button`、`Progress`、`Card`、`Input`、`Textarea`、`Label`、`Select`、`Switch`、`Checkbox`、`Tabs`、`Collapsible`、`Dialog`、`Drawer`、`Popover`、`DropdownMenu`、`Tooltip`）→ ② `src/components/common/` → ③ `reka-ui` Primitive → ④ 缺失原语生成到 `ui/` 并套用第 5、7 节 token → ⑤ 局部组件（最后选择）。同一原语在 `ui/` 仅维护一份。
+**共享行为优先，页面构图与业务组件自由。** 现有 `src/components/ui/` 含 Button、Progress、Card、Input、Textarea、Label、Select、Switch、Checkbox、Tabs、Collapsible、Dialog、Drawer、Popover、DropdownMenu、Tooltip；`src/components/common/` 提供通用业务组合。优先复用或组合可靠原语（包括 `reka-ui`），保留键盘行为、焦点、可访问语义及 API 兼容。
 
-**禁止裸写业务交互原生控件**（第 15 节登记例外、打印视图及原语内部封装除外）：`<select>` → Reka Select/Combobox；`<details>` 套娃 → Collapsible/Accordion；`<dialog>`/手写遮罩 → Reka Dialog/Drawer；`title` 提示 → Tooltip；手写下拉/浮层 → DropdownMenu/Popover；裸 checkbox/radio → Checkbox/RadioGroup/Switch；手写页签 → Reka Tabs。
+业务专属图形、设备面板、排产交互、卡片、数据展示、筛选组合等可直接在模块作用域设计，不必先穷尽共享组件，不为局部需求修改全站默认样式。可通过插槽、变体和局部 token 扩展共享能力；确有跨模块共性再沉淀到 `ui/` 或 `common/`。同一通用原语避免重复维护，不把新组件库引入作为默认方案。
 
-- **PageHeader / SectionPanel**：页面唯一 H1，最重要操作置右末；`SectionPanel` 为 L1 实色区块，内部不再嵌套完整 SectionPanel。
-- **Button**：变体 `default / outline / secondary / soft / ghost / destructive / link`，尺寸 `xs(28) / sm(32) / default(36) / lg(40)`；真导航保留 `a` / `RouterLink` 语义；纯图标按钮须带 `aria-label`；Loading 保宽显字；触控接近或达到 44px。
-- **StatusPill / Progress**：状态用中文业务名、不作按钮、同列表同色调；紧凑进度用 `ProgressMeter`（6px），无证据进度显示未知，百分比同步提供文字。
-- **表单**：标签置顶、高 36–40px、`rounded-lg`、L1 实色、`border-input`；聚焦 `border-ring` + 3px ring；失焦/提交校验，错误置下且程序化关联（不只变框色）；区分只读与禁用；提交失败保留输入。
-- **表格**：L1 实色放入 `overflow-x-auto` 并设最小宽；吸顶表头框可用 L2 玻璃，行不用；表头 12px 600、行高 ≥40px、悬停 `bg-accent/40`；数字右对齐 `tabular-nums`；操作靠右；大数据用虚拟滚动与冻结列；需横向比较的数据不拆成卡片墙。
-- **Tabs / 分段控件**：使用 Reka Tabs，实测位置滑动底片（`ease-spring-snappy`）；多标签横向滚动；不替代向导步骤。
+**控件选择**：默认用已封装的 Select/Combobox、Collapsible、Dialog/Drawer、Tooltip、DropdownMenu/Popover、Checkbox/RadioGroup/Switch、Tabs；允许有业务或可访问性收益的原生语义控件、专用交互及登记的模块例外。自定义交互须具备等效键盘、焦点、屏幕阅读及状态行为；不能用不可聚焦的 div 模拟按钮，不能手写不具备模态管理的遮罩。打印视图独立。
+
+- **PageHeader / SectionPanel**：可用、可扩展或由符合业务构图的组合替代；保留语义标题、关键操作可达性与一致的内容层级。
+- **Button**：现有变体 default / outline / secondary / soft / ghost / destructive / link，尺寸 xs(28) / sm(32) / default(36) / lg(40)。真导航保留 a / RouterLink；图标按钮有可访问名称；加载保宽、反馈可见、防重提；触控目标接近或达到 44px，紧凑桌面需保证准确操作。允许有意义的局部尺寸、颜色和材质变体。
+- **StatusPill / Progress**：状态用中文业务名、同类同语义；可按场景设计环形进度、阶段轴、仪表或线性 ProgressMeter。未知进度明确显示未知，不能伪造百分比；重要信息同时提供文字。
+- **表单**：默认标签置顶、高 36–40px、L1 实色；按任务可设计多栏、内联、向导和分组编辑。可见焦点、错误程序化关联、失败保留输入、区分只读与禁用。
+- **表格**：真实比较类数据保留可扫描的表格；行高按密度选择，数字右对齐，必要时使用虚拟滚动、冻结列、批量、分栏或时间轴。表格内部滚动，保持字段、排序和操作可达；不把需要横向比较的数据机械拆成卡片。
+- **Tabs / 分段控件**：默认使用 Reka Tabs，可用滑动底片和场景专属变体；多标签支持溢出，语义与键盘正确。
 
 ### 9.9 Dialog、Drawer 与 Popover
 
-- 属于 L3 浮层；从触发点方向 `scale(0.96)→1` + 淡入（弹簧曲线），关闭沿原路返回；遮罩为深 Slate 30–40% + 轻模糊。
-- Dialog 具备 `role="dialog"`、`aria-modal="true"` 与标题关联；打开聚焦首个安全控件或标题，Tab 锁在模态内，关闭恢复焦点到触发器；支持 Escape（提交禁关时给反馈）；标题与操作固定、正文独立滚动；破坏性确认写清对象、后果与审计留存。
-- Popover 非模态，点外部或 Escape 关闭。布料仓详情弹窗分层见第 15.12 节。
-
-- **Toast / 加载 / 空态 / 图标**：全局 Toast（L3，移动顶中、`sm` 起右上 ≤390px，弹簧入场可悬停暂停）；通知用 `role="status"`，阻断错用页内 `role="alert"`；Skeleton 用 `.skeleton-shimmer` 贴近终态几何；空态用图标 + 说明 + 可执行操作；图标统一 `@lucide/vue`（16 / 12–14 / 20px），装饰 `aria-hidden="true"`，禁用 Emoji 图标。
+- L3 浮层按场景设计大小、布局、材质及出入场；默认从触发方向缩放 0.96→1 + 淡入，允许有意义的过渡变体。
+- Dialog 具备 role="dialog"、aria-modal="true" 与标题关联；打开聚焦安全控件或标题，模态内圈焦点，关闭恢复触发器焦点；支持 Escape（提交禁关时给反馈）；正文可独立滚动；破坏性确认写清对象、后果与审计留存。
+- Popover 非模态，点外部或 Escape 关闭。布料仓详情弹窗见第 15.12 节。
+- **Toast / 加载 / 空态 / 图标**：全局 Toast 默认 L3（移动顶中、sm 起右上 ≤390px）；通知用 role="status"，阻断错用页内 role="alert"；Skeleton 与终态几何匹配；空态提供清晰下一步，不为装饰而填充。功能图标优先 `@lucide/vue`；允许业务专属 SVG、图标组合、品牌插画、可视化标记与适当的多色图形，装饰 aria-hidden="true"，不把 Emoji 当核心操作的唯一图标或状态语义。
 
 ## 10. 状态、风险与业务反馈
 
@@ -124,8 +151,9 @@
 
 ### 11.2 动效规则与微交互配方
 
-- **规则**：只动画 `transform` 和 `opacity`（布局变化用 FLIP / `TransitionGroup`，禁 `transition: all`）；可中断、空间连续（`transform-origin` 跟随触发器）；Hover 上浮 ≤2px、按压 `scale(0.97–0.98)`、进入位移 8–16px；首屏交错每项 ≤40ms 总长 ≤360ms，刷新不重播，不虚构数字补间；表格不持续闪烁；跨模块过场归 `src/features/route-motion`；支持 `prefers-reduced-motion` 且后台隐藏暂停装饰；优先 CSS transition + WAAPI，不引动画库。
-- **微交互**：**按钮** Hover 提亮+升 `elevation-1`、按下 `scale(0.97)`（snappy）、加载保宽显转圈、成功短现对勾；**可点卡** 上浮 2px+品牌描边+`elevation-2`；**开关/复选** 弹簧滑块与描边勾选；**页签** 实测滑动底片；**输入框** 160ms 焦点 ring、错时轻抖一次；**列表项** 悬停淡入、选中左侧指示条；**拖放** 拿起 1.02+`elevation-3`、落位 bouncy；**复制/保存** 切换对勾约 1.5s 复原。
+- **性能与行为底线**：空间位移优先 `transform` / `opacity`，布局过渡优先 FLIP / `TransitionGroup`；允许颜色、描边、焦点环、阴影、可控尺寸、SVG 路径等有价值的过渡，涉及布局/绘制成本须限域并验证。禁无约束 `transition: all`；可中断、保持空间连续，不阻塞输入，不虚构数据补间，不在高频表格持续闪烁；跨模块过场归 `src/features/route-motion`；支持 `prefers-reduced-motion`，页面隐藏时暂停装饰。CSS / SVG / WAAPI 优先，依赖策略见第 3 节。
+- **表现等级（参考，不是硬时限）**：M1 高效型用于精密工作台，以即时反馈、100–240ms 小过渡为主；M2 精致型用于普通业务、协作与控制，以 160–480ms 弹簧、分层展开、状态形变为主；M3 沉浸型用于门户、认证及低频设备展示，允许更丰富的级联、分层视差、扫描、光影和 SVG 叙事，首次入场可超出普通 token，保证立即可操作、可跳过或减少动态，非必要不反复播放。Hover 位移、交错间隔和缩放幅度按场景实测调整。
+- **默认微交互配方（可按场景设计变体）**：**按钮** Hover 提亮+升 `elevation-1`、按下 `scale(0.97)`（snappy）、加载保宽显转圈、成功短现对勾；**可点卡** 上浮 2px+品牌描边+`elevation-2`；**开关/复选** 弹簧滑块与描边勾选；**页签** 实测滑动底片；**输入框** 160ms 焦点 ring、错时轻抖一次；**列表项** 悬停淡入、选中左侧指示条；**拖放** 拿起 1.02+`elevation-3`、落位 bouncy；**复制/保存** 切换对勾约 1.5s 复原。
 
 ## 12. 无障碍基线
 
@@ -133,7 +161,7 @@ WCAG 2.1 AA（正文 ≥4.5:1、大字 ≥3:1，玻璃面在真实背景测量�
 
 ## 13. 深色模式
 
-`.dark` 变量已预留，但运行时锁定 `color-scheme: light`，玻璃/光晕尚未配深色值。**浅色为唯一完整支持主题**，新组件用语义 token 以利迁移；正式启用前须整体验收全部路由、表面、玻璃、图表与打印。
+`.dark` 变量已预留，但运行时锁定 `color-scheme: light`，玻璃/光晕尚未配深色值。**浅色为主站唯一完整支持主题**，允许局部暗色 Hero/专题展示，保持作用域及可读性；新组件用语义 token 以利迁移；正式启用全局深色前须整体验收全部路由、表面、玻璃、图表与打印。
 
 ## 14. 打印规范
 
@@ -141,39 +169,59 @@ WCAG 2.1 AA（正文 ≥4.5:1、大字 ≥3:1，玻璃面在真实背景测量�
 
 ## 15. 局部设计例外索引
 
-以下模块在明确作用域内保留独立规则，细则见 [`docs/frontend/exceptions/`](docs/frontend/exceptions/README.md)，不得外溢；改模块视觉只更新对应文件，不写回本文。模块实质重构时向本规范收敛。
+以下模块在明确作用域内保留独立规则，细则见 [`docs/frontend/exceptions/`](docs/frontend/exceptions/README.md)，不得外溢；改模块视觉只更新对应文件，不写回本文。模块实质重构时按 V3.0 重新选择场景与密度，保留有效业务及局部视觉约定；不强制向统一构图收敛。
 
-| 编号 | 范围 | 细则 | 编号 | 范围 | 细则 |
-| --- | --- | --- | --- | --- | --- |
-| 15.1 | 注塑排产占位 | [misc.md](docs/frontend/exceptions/misc.md) | 15.8 | 合并版 IAM 工作区 | [iam-workspace.md](docs/frontend/exceptions/iam-workspace.md) |
-| 15.2 | 登录/注册/改密 | [auth.md](docs/frontend/exceptions/auth.md) | 15.9 | 纸箱协同与内部仓 | [carton.md](docs/frontend/exceptions/carton.md) |
-| 15.3 | 历史业务全页 | 见下方 | 15.10 | 华康 A UV 打印 | [uv-printing.md](docs/frontend/exceptions/uv-printing.md) |
-| 15.4 | 华康 A 3D 打印 | [three-d-printing.md](docs/frontend/exceptions/three-d-printing.md) | 15.11 | QC 验货工作台 | [qc.md](docs/frontend/exceptions/qc.md) |
-| 15.5 | 导航首页 V4 | [home-prism-v4.md](docs/frontend/exceptions/home-prism-v4.md) | 15.12 | 华康 C 布料仓 | [fabric-warehouse.md](docs/frontend/exceptions/fabric-warehouse.md) |
-| 15.6 | 曜灵助手 | [assistant.md](docs/frontend/exceptions/assistant.md) | 15.13 | 跨模块导航过场 | [route-motion.md](docs/frontend/exceptions/route-motion.md) |
-| 15.7 | 成员协作 | [collaboration.md](docs/frontend/exceptions/collaboration.md) | 15.14 | 在线文档/排产 Toast | [misc.md](docs/frontend/exceptions/misc.md) |
+| 编号 | 范围 | 细则 |
+| --- | --- | --- |
+| 15.1 | 注塑排产占位 | [misc.md](docs/frontend/exceptions/misc.md) |
+| 15.2 | 登录/注册/改密 | [auth.md](docs/frontend/exceptions/auth.md) |
+| 15.3 | 历史业务全页 | 见下方 |
+| 15.4 | 华康 A 3D 打印 | [three-d-printing.md](docs/frontend/exceptions/three-d-printing.md) |
+| 15.6 | 曜灵助手 | [assistant.md](docs/frontend/exceptions/assistant.md) |
+| 15.7 | 成员协作 | [collaboration.md](docs/frontend/exceptions/collaboration.md) |
+| 15.8 | 合并版 IAM 工作区 | [iam-workspace.md](docs/frontend/exceptions/iam-workspace.md) |
+| 15.9 | 纸箱协同与内部仓 | [carton.md](docs/frontend/exceptions/carton.md) |
+| 15.12 | 华康 C 布料仓 | [fabric-warehouse.md](docs/frontend/exceptions/fabric-warehouse.md) |
+| 15.14 | 在线文档/排产 Toast | [misc.md](docs/frontend/exceptions/misc.md) |
 
-**15.3 历史业务全页**：维护时优先复用全局 token 与共享原语；仅在确有独立密度、打印或交互模型时保留局部命名空间并在本节登记。
+原 15.5、15.10、15.11、15.13 的历史局部设计约定及喷油旧界面规范已取消，不再作为现行视觉约束。相关模块按本规范 V3.0 和真实业务合同设计；历史实施记录仅供追溯，不恢复旧视觉限制。其他编号保持不变。
+
+**15.3 历史业务全页**：维护时优先复用全局 token 与共享原语；允许因独立构图、密度、视觉表达、打印或交互模型采用局部命名空间，长期模块专属约定记入对应局部规范。
 
 ## 16. 新页面实施清单
 
-1. 明确页面归属（标准 AppShell / 认证状态全页 / 批准的业务全页）；
-2. 用 `app-page`、`PageHeader`、`SectionPanel` 搭骨架，按第 7 节划定 L0–L3；
-3. 按第 9 节顺序组装原语，缺失则生成到 `ui/`，不裸写原生控件；
-4. 仅用语义、玻璃、阴影与动效 token，无硬编码色值、阴影和时长；
-5. 按第 8 节留白，首屏一个焦点、一个主操作，卡片嵌套 ≤2 层；
-6. 补齐第 11.2 节交互微反馈与弹簧过渡；
-7. 从 320px 起适配，仅表格内部横向滚动（固定宽工作区验最低宽与降级）；
-8. 覆盖加载、空态、错误、无权限、只读、成功及危险确认路径；
-9. 完成键盘、焦点、对比度、`prefers-reduced-motion` 与 `prefers-reduced-transparency` 检查；
-10. 用真实数据、长中文、长编号、空数据和最小视口验证（需打印则建独立打印视图）。
+1. 确定真实用户任务、业务信息、权限及页面所属壳；选择适合的设计场景、密度与动效等级。
+2. 新模块或重大 UI 重构先形成 UI 简报，探索差异化构图、明确视觉参考或可运行的局部原型及必要的原创业务组件；不机械复制邻页。
+3. 以真实用户任务和字段组织页面，复用交互原语、扩展必要变体，按场景组合 L0–L3；不要强制 PageHeader / SectionPanel 骨架。
+4. 使用共享 token 或作用域明确的局部 token，保留品牌与状态语义；对有意义的偏离说明原因。
+5. 实现有价值的视觉图形、信息呈现和关键微交互，不为凑数量添加卡片、图表、动画或假功能。
+6. 覆盖真实加载、空态、错误、无权限、只读、成功及危险确认路径；长中文、长编号、空数据及极端视口可读可操作。
+7. 验证键盘、焦点、对比度、减少动态/透明度与性能；按实际页面契约处理响应式、打印及局部横滚。
+8. 真实浏览器执行技术 QA，并按第 17.2 节完成独立设计评审；视觉简陋、不合格须重构并复查，不能只凭功能通过而交付。
 
 ## 17. 视觉 QA 与变更治理
 
-- **17.1 必须验证**：断点 320 / 640 / 1024 / 1280 / 1536px 及典型桌面宽（固定宽工作区验最低宽与降级）；长中文/编号/金额/负数/超长文件名；Hover/Focus/Active/Disabled/Loading/Error；键盘、Escape、焦点恢复与读屏；`prefers-reduced-motion` 与 `prefers-reduced-transparency`；控制台零样式/无障碍错；全页返回与厂区权限上下文；打印分页与颜色。
-- **17.2 美学验收**：首屏唯一焦点与主操作？层级靠 L0–L3 材质和留白而非边框堆叠？玻璃仅在壳层与浮层且有可感知背景？卡片嵌套 ≤2 层？所有交互有悬停/按压/聚焦/加载反馈？动效用弹簧 token、可中断且无布局抖动？零裸原生控件与硬编码？
-- **17.3 反模式黑名单**：灰底灰框表格墙、粗框 fieldset、双层边框；`<details>` 套娃、工程提示条占主视区；同屏多主按钮、红作普通强调；彩虹渐变、霓虹光、大色块、Emoji 图标；线性/`ease` 生硬动画、无退场弹窗；表格行/表单用 `backdrop-filter`；硬编码 hex/魔法阴影/`transition: all`；编造示例 KPI。
-- **17.4 变更规则**：改全局 token 前先审共享组件与全页影响；不直接改 Tailwind/shadcn 依赖；新原语放 `ui/`、业务组合放 `common/`；模块 CSS 必须带根命名空间；全局长期变动改本文，模块变动改第 15 节对应文件；重大调整保留同视口截图与无障碍证据（参考 [registration-design-qa.md](docs/archive/iam/registration-design-qa.md)）。
+- **17.1 技术 QA（必须）**：新模块及重大重构的普通页面覆盖 320 / 640 / 1024 / 1280 / 1536px 及典型桌面尺寸；固定宽工作区验最低宽与降级；小修复验相关视口。验证长文本、数字、操作状态、键盘、Escape、焦点恢复与读屏、减少动态/透明度、相关控制台/网络、全页返回、厂区权限上下文和涉及时的打印；区分测试、浏览器观察与生产/设备验收。
+
+### 17.2 独立设计评审（不是 Bug 检查）
+
+新模块或重大 UI 重构必须在实施前明确视觉目标，在技术 QA 后进行一次**独立设计评审**。实际渲染页面为主要证据，UI 简报、参考图/原型、真实字段与用户任务为依据；检查首屏和关键工作区、典型桌面/必要窄屏、至少一条主要交互及相关状态。静态源码、构建通过、DOM 快照或开发者自评不能替代视觉评审。优先委派未参与实现的 reviewer；工具/代理不可用则交由独立会话或用户评审，明确未完成，不伪称独立审核。
+
+| 维度 | 通过依据（根据任务判断，不以效果数量计分） |
+| --- | --- |
+| 构图与视觉辨识度 | 布局由业务驱动，主次与节奏清楚；不是无设计意图的标题、默认卡片、普通表格拼接 |
+| 视觉质感与品牌 | 字体、配色、材质、图标、留白和细节协调；呈现与已选场景相匹配的精致成品感 |
+| 信息密度与工作效率 | 首屏关键数据及高频动作可达；字段易扫描，空间有效利用；不以大留白或装饰牺牲效率 |
+| 业务可视化 | 有需要时用准确的图形、流程、状态或比较表达；真实数据、图例、单位与未知值清楚，不强塞无价值图表 |
+| 交互质感 | 关键操作反馈即时、过渡连贯、状态完整且可中断；无生硬跳变或干扰高频操作的动画 |
+| 参考与产品完成度 | 对照本轮目标、参考或原型逐区评价；边缘状态不粗糙，整体不是临时骨架；偏离有业务依据 |
+
+每个适用维度给出 PASS / REWORK / UNVERIFIED，附截图或实际交互证据、具体区域、问题与改进方向；不适用须说明理由。不得仅用审美分数、合规数量或“整体不错”代替证据。
+
+**返工门禁**：任一适用维度有实质性设计问题即 REWORK；包括页面明显简陋、机械套模板、视觉层级混乱、关键工作区不够精致、信息呈现或交互动效未达到设计目标，即使功能与测试均通过也不能判定设计合格。优先修正构图、信息架构和组件表现，不以增加无意义渐变、卡片或动画掩盖问题；修复后用同一路由/状态/视口重新截图、操作并复评受影响维度。没有固定循环次数，不重复已通过的无关检查。必要设计评审未执行或缺少证据为 UNVERIFIED；有明确阻塞则记录，不能宣称完整交付。
+
+- **17.3 反模式**：老式灰框表格墙、通用后台模板机械套用、无意义空白/卡片/图表、工程提示条占主视区、相互竞争的同组主操作、红作普通语义、无法解释的色彩堆叠、假数据、不可操作的装饰控件、缺失状态反馈、滚动行/表单的背景模糊、无约束 `transition: all`。品牌渐变、暗色 Hero、彩色 SVG、丰富动效等不是反模式；按场景和实际质量验收。
+- **17.4 变更治理**：全局 token 与组件默认样式改动先审影响面，保持公共 API 兼容；局部创新默认作用域内实现。未获授权不新增依赖或扩大修改范围；确有必要的新依赖按第 3 节论证。长期变化更新本文/局部规范；重大调整留真实截图、交互与设计评审记录。
 
 ## 18. 当前已知设计债务
 

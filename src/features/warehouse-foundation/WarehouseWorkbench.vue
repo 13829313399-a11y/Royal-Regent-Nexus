@@ -2,6 +2,7 @@
 import { ref, watch, onMounted, onBeforeUnmount, type Component } from 'vue'
 import { RouterLink, type RouteLocationRaw } from 'vue-router'
 import { ArrowLeft, BookOpen, Boxes, Building2 } from '@lucide/vue'
+import { vSpatialGlyph } from '@/features/route-motion/spatialAnchors'
 import AccountMenu from '@/components/layout/AccountMenu.vue'
 
 const props = defineProps<{
@@ -35,7 +36,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', revealActiveSection))
     <header class="warehouse-header">
       <div class="warehouse-header-inner">
         <RouterLink :to="home" class="warehouse-back" aria-label="仓管首页"><ArrowLeft :size="16" /><span>PMC / 仓管模块</span></RouterLink>
-        <div class="warehouse-brand"><span class="warehouse-brand-icon"><Boxes :size="21" /></span><div><strong>{{ title }}</strong><small>{{ description }}</small></div></div>
+        <div class="warehouse-brand" data-rr-motion-chrome data-rr-motion-target="surface"><span v-spatial-glyph="Boxes" class="warehouse-brand-icon" data-rr-motion-target="icon" aria-hidden="true"><Boxes :size="21" /></span><div><strong data-rr-motion-label>{{ title }}</strong><small>{{ description }}</small></div></div>
         <slot name="search" />
         <div class="warehouse-header-tools">
           <span class="warehouse-factory"><Building2 :size="15" />{{ factoryLabel }}</span>
