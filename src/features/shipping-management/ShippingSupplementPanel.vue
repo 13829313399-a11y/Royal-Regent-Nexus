@@ -348,11 +348,12 @@ watch(selectedTaskId, (id) => {
             {{ sheet.filename }} · {{ String(sheet.createdAt || '').replace('T', ' ').slice(0, 16) }}
           </option>
         </select>
-        <button type="button" class="h-9 rounded-lg border border-emerald-200 px-3 text-[11px] font-semibold text-emerald-700" @click="loadSheets">刷新</button>
-        <button type="button" class="h-9 rounded-lg border border-emerald-200 bg-white px-3 text-[12px] font-semibold text-emerald-800" @click="emit('back')">← 返回工厂排期</button>
-        <button type="button" class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-emerald-700 px-4 text-[12px] font-semibold text-white disabled:opacity-60" :disabled="!draft || exporting" @click="download">
-          <Download class="size-3.5" />{{ exporting ? '生成中…' : '导出补料单' }}
-        </button>
+        <div class="ml-auto flex flex-wrap items-center gap-2">
+          <button type="button" class="h-9 rounded-lg border border-emerald-200 bg-white px-3 text-[12px] font-semibold text-emerald-800" @click="emit('back')">← 返回工厂排期</button>
+          <button type="button" class="inline-flex h-9 items-center gap-1.5 rounded-lg bg-emerald-700 px-4 text-[12px] font-semibold text-white disabled:opacity-60" :disabled="!draft || exporting" @click="download">
+            <Download class="size-3.5" />{{ exporting ? '生成中…' : '导出补料单' }}
+          </button>
+        </div>
       </div>
       <p v-if="message" class="mt-2 text-[11px] text-rose-600">{{ message }}</p>
       <p v-if="loading" class="mt-2 text-[11px] text-slate-500">正在生成…</p>

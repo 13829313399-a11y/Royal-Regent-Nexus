@@ -357,6 +357,40 @@ def preview_doc(db, user: AuthContext, factory_id: str, doc_id: str) -> dict:
     return {'opened': False, 'path': '', 'filename': filename, 'sheets': workbook_preview(filename, content)}
 
 
+def update_doc_header(db, user: AuthContext, factory_id: str, doc_id: str, payload: dict) -> dict:
+    from fastapi import HTTPException
+    from app.services.shipping_mail_service import authorize
+    authorize(user, factory_id, 'write')
+    doc = db.scalar(select(ShippingGeneratedDoc).where(
+        ShippingGeneratedDoc.id == doc_id, ShippingGeneratedDoc.factory_id == factory_id,
+    ))
+    if doc is None:
+        raise HTTPException(404, '文件不存在')
+    header = json.loads(doc.header_json or '{}')
+    for key in ('contractNo', 'plate'):
+        if key in payload:
+            header[key] = str(payload.get(key) or '')
+    doc.header_json = json.dumps(header, ensure_ascii=False)
+    remark = str(payload.get('remark') or '').strip()
+    if remark:
+        previous = str(header.get('exceptionNote') or '').strip()
+        lines = json.loads(doc.lines_json or '[]')
+        for line in lines:
+            if not isinstance(line, dict):
+                continue
+            text = str(line.get('remark') or '')
+            for token in (previous, remark):
+                if token:
+                    text = text.replace(token, '')
+            line['remark'] = ' '.join(text.split())
+        doc.lines_json = json.dumps(lines, ensure_ascii=False)
+        header['exceptionNote'] = remark
+        doc.header_json = json.dumps(header, ensure_ascii=False)
+    db.commit()
+    filename, _content, saved_path = download_with_path(db, user, factory_id, doc_id, archive=True)
+    return {'updated': True, 'filename': filename, 'path': saved_path}
+
+
 def delete_doc(db, user: AuthContext, factory_id: str, doc_id: str) -> dict:
     from app.services.shipping_mail_service import authorize
     authorize(user, factory_id, 'write')

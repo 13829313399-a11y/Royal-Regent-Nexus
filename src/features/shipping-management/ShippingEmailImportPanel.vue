@@ -34,6 +34,7 @@ const deletingBatch = ref(false)
 const batchLoading = ref(false)
 const selectedBatchIds = ref<string[]>([])
 const bulkDeleteArmed = ref(false)
+const clearAllArmed = ref(false)
 const bulkDeleting = ref(false)
 const mailServer = ref('')
 const mailAddress = ref('')
@@ -552,6 +553,36 @@ async function bulkDeleteBatches() {
   }
 }
 
+async function deleteAllBatches() {
+  if (!batches.value.length) return
+  if (!clearAllArmed.value) {
+    clearAllArmed.value = true
+    window.setTimeout(() => { clearAllArmed.value = false }, 5000)
+    return
+  }
+  bulkDeleting.value = true
+  try {
+    let deleted = 0
+    for (const batch of [...batches.value]) {
+      try {
+        await deleteShippingMailBatch(props.factoryId, batch.id)
+        deleted += 1
+      } catch {
+        // continue deleting the rest
+      }
+    }
+    selectedBatchIds.value = []
+    selectedBatchId.value = ''
+    selectedBatchItem.value = null
+    previews.value = []
+    clearAllArmed.value = false
+    await loadBatches()
+    emit('notify', `已清空 ${deleted} 条解析记录。`)
+  } finally {
+    bulkDeleting.value = false
+  }
+}
+
 async function toggleRecords() {
   recordsOpen.value = !recordsOpen.value
   if (recordsOpen.value) await loadBatches()
@@ -683,6 +714,15 @@ async function refreshRecords() {
           >取消删除</button>
           <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-2.5 text-[11px] font-semibold text-emerald-800 transition hover:border-emerald-300 hover:bg-emerald-50" @click="refreshRecords">
             <RefreshCw class="size-3.5" aria-hidden="true" />刷新
+          </button>
+          <button
+            type="button"
+            class="inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-[11px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-50"
+            :class="clearAllArmed ? 'border-rose-300 bg-rose-50 text-rose-700' : 'border-rose-200 bg-white text-rose-600 hover:bg-rose-50'"
+            :disabled="!batches.length || bulkDeleting"
+            @click="deleteAllBatches"
+          >
+            <Trash2 class="size-3.5" aria-hidden="true" />{{ clearAllArmed ? '确认清空' : '一键删除' }}
           </button>
           <button v-if="recordsOpen" type="button" class="text-[11px] text-slate-400 hover:text-slate-600" @click="recordsOpen = false">收起</button>
         </div>

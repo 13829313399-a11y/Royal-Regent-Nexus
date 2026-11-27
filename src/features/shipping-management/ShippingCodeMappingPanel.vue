@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { Download, Info, Plus, RefreshCw, RotateCcw, Search, Trash2, Upload } from '@lucide/vue'
-import { getGeneratedDoc, importCodeMappingFile, listGeneratedDocs, type GeneratedDoc } from '@/api/shippingMail'
+import { exportCodeMappingRows, getGeneratedDoc, getLoadingSheet, importCodeMappingFile, listGeneratedDocs, listLoadingSheets, type GeneratedDoc } from '@/api/shippingMail'
 
 const props = defineProps<{ factoryId: string }>()
 const emit = defineEmits<{ notify: [message: string] }>()
@@ -253,10 +253,33 @@ async function changeYear() {
 
 async function loadGeneratedRows() {
   const soDocs = await listGeneratedDocs(props.factoryId, 'so')
-  const truckDocs = await listGeneratedDocs(props.factoryId, 'truck_export')
-  const docs: GeneratedDoc[] = [...soDocs.slice(0, 12), ...truckDocs.slice(0, 8)]
+  const truckDocs = [
+    ...(await listGeneratedDocs(props.factoryId, 'truck_export')),
+    ...(await listGeneratedDocs(props.factoryId, 'truck_bulk')),
+  ]
+  const docs: GeneratedDoc[] = [...soDocs.slice(0, 12), ...truckDocs.slice(0, 12)]
   const next: CodeRow[] = []
   const seen = new Set<string>()
+  const sheetMetrics = new Map<string, { cartons: number; quantity: number; gross: number; net: number; cbm: number }>()
+  try {
+    const sheets = await listLoadingSheets(props.factoryId, 'dk')
+    for (const sheet of sheets.slice(0, 12)) {
+      const detail = await getLoadingSheet(props.factoryId, sheet.id)
+      for (const line of detail.lines ?? []) {
+        const code = String(line.filingCode || line.declareCode || '').trim()
+        if (!code) continue
+        const contract = String(line.contract || '').trim()
+        const key = `${contract}|${code}`
+        const cartons = Number(line.cartons) || 0
+        const quantity = Number(line.quantity) || 0
+        const grossPerCarton = Number(line.grossPerCarton) || (cartons ? (Number(line.grossWeight) || 0) / cartons : 0)
+        const netPerCarton = Number(line.netPerCarton) || (cartons ? (Number(line.netWeight) || 0) / cartons : 0)
+        sheetMetrics.set(key, { cartons, quantity, gross: grossPerCarton, net: netPerCarton, cbm: Number(line.cbm) || 0 })
+      }
+    }
+  } catch {
+    // generated docs still provide a partial mapping when loading sheets are unavailable
+  }
   for (const doc of docs) {
     let detail
     try { detail = await getGeneratedDoc(props.factoryId, doc.id) } catch { continue }
@@ -266,17 +289,18 @@ async function loadGeneratedRows() {
       const row = line as Record<string, unknown>
       const code = String(row.filingCode || row.product_code || row.declareCode || '').trim()
       if (!code) continue
-      const cartons = Number(row.cartons) || 0
-      const qty = Number(row.quantity) || 0
+      const metric = sheetMetrics.get(`${String(row.contract || row.contract_no || '').trim()}|${code}`)
+      const cartons = Number(row.cartons) || metric?.cartons || 0
+      const qty = Number(row.quantity) || metric?.quantity || 0
       const coefficient = Number(row.coefficient) || (cartons ? qty / cartons : 0)
       const perCarton = coefficient ? `${Math.round(coefficient * 100) / 100} 个` : '默认'
       const key = `${code}|${String(row.description || row.name || '')}|${perCarton}|${customer}`
       if (seen.has(key)) continue
       seen.add(key)
-      const gross = Number(row.grossPerCarton) || (cartons ? (Number(row.grossWeight) || 0) / cartons : 0)
-      const net = Number(row.netPerCarton) || (cartons ? (Number(row.netWeight) || 0) / cartons : 0)
+      const gross = Number(row.grossPerCarton) || metric?.gross || (cartons ? (Number(row.grossWeight) || 0) / cartons : 0)
+      const net = Number(row.netPerCarton) || metric?.net || (cartons ? (Number(row.netWeight) || 0) / cartons : 0)
       const headerDate = String(header.sheetDate || header.etd || header.shipDate || '').slice(0, 10)
-      const rowCbm = Number(row.cbm) || 0
+      const rowCbm = Number(row.cbm) || metric?.cbm || 0
       const transport = String(header.transportCompany || header.transport || '').trim()
       const trip = String(header.truckHead || header.vehicle || header.number || header.truckNo || header.truck_no || '').trim()
       const containerType = String(header.containerType || header.truckType || '').trim()
@@ -328,6 +352,79 @@ async function loadMappings() {
 
 onMounted(loadMappings)
 
+const showExport = ref(false)
+const exportPreview = ref<{ path: string; filename: string; rows: CodeRow[] } | null>(null)
+const exportYear = ref('')
+const exportMonth = ref('')
+const exportDay = ref('')
+const exportYears = computed(() => ['2026', '2025', '2024', '2023', '2022', '2021', '2020'])
+const showAdd = ref(false)
+const addForm = reactive({
+  code: '', name: '', customer: '', perCarton: '', category: '塑胶',
+  gross: '', net: '', volume: '', port: '盐田', note: '',
+})
+const addSaving = ref(false)
+
+function openAdd() {
+  Object.assign(addForm, { code: '', name: '', customer: '', perCarton: '', category: '塑胶', gross: '', net: '', volume: '', port: '盐田', note: '' })
+  showAdd.value = true
+}
+
+function saveAdd() {
+  const code = addForm.code.trim()
+  if (!code) {
+    emit('notify', '请填写货号')
+    return
+  }
+  addSaving.value = true
+  try {
+    customRows.value = [{
+      code,
+      name: addForm.name.trim() || '-',
+      perCarton: addForm.perCarton.trim() || '-',
+      category: addForm.category.trim() || '塑胶',
+      note: addForm.note.trim() || '-',
+      gross: addForm.gross.trim() || '-',
+      net: addForm.net.trim() || '-',
+      volume: addForm.volume.trim() || '-',
+      source: '手工',
+      customer: addForm.customer.trim() || '-',
+      date: new Date().toISOString().slice(0, 10),
+      port: addForm.port.trim() || '盐田',
+      status: '已同步',
+      tone: 'blue',
+    }, ...customRows.value]
+    persistCustomRows()
+    mergeRows()
+    showAdd.value = false
+    emit('notify', `已新增货号映射 ${code}`)
+  } finally {
+    addSaving.value = false
+  }
+}
+
+function openExport() {
+  const today = new Date()
+  exportYear.value = String(today.getFullYear())
+  exportMonth.value = ''
+  exportDay.value = ''
+  showExport.value = true
+}
+
+async function exportRows() {
+  const prefix = exportYear.value
+    ? `${exportYear.value}${exportMonth.value ? `-${exportMonth.value.padStart(2, '0')}` : ''}${exportDay.value ? `-${exportDay.value.padStart(2, '0')}` : ''}`
+    : ''
+  const sourceRows = prefix ? filteredRows.value.filter((row) => String(row.date || '').startsWith(prefix)) : filteredRows.value
+  try {
+    const result = await exportCodeMappingRows(props.factoryId, prefix, sourceRows as unknown as Array<Record<string, unknown>>)
+    showExport.value = false
+    exportPreview.value = { path: result.path, filename: result.filename, rows: [...sourceRows] }
+    emit('notify', `已导出 ${result.count} 条货号映射到 ${result.path}`)
+  } catch (error) {
+    emit('notify', `导出失败：${String(error)}`)
+  }
+}
 function preview(title: string) {
   emit('notify', `界面预览：${title}尚未接入后端接口。`)
 }
@@ -408,14 +505,14 @@ function reset() {
           <button
             type="button"
             class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-emerald-200 bg-white px-3 text-[12px] font-semibold text-emerald-900 transition hover:bg-emerald-50"
-            @click="preview('导出')"
+            @click="openExport"
           >
             <Download class="size-3.5" aria-hidden="true" />导出
           </button>
           <button
             type="button"
             class="inline-flex h-8 items-center gap-1.5 rounded-lg bg-emerald-700 px-3 text-[12px] font-semibold text-white shadow-sm transition hover:bg-emerald-800"
-            @click="preview('新增货号映射')"
+            @click="openAdd"
           >
             <Plus class="size-3.5" aria-hidden="true" />新增
           </button>
@@ -533,6 +630,104 @@ function reset() {
         </div>
       </div>
       <p v-if="!filteredRows.length" class="px-4 py-10 text-center text-[12px] text-slate-500">没有匹配的货号映射</p>
+    </div>
+    <div v-if="exportPreview" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" @click.self="exportPreview = null">
+      <div class="max-h-[90vh] w-full max-w-5xl overflow-hidden rounded-xl bg-white shadow-xl" role="dialog" aria-label="导出表格预览">
+        <div class="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+          <div>
+            <h3 class="text-[14px] font-bold text-emerald-950">导出表格预览</h3>
+            <p class="mt-0.5 break-all text-[11px] text-slate-500">{{ exportPreview.path }}</p>
+          </div>
+          <button type="button" class="text-slate-400 hover:text-slate-600" @click="exportPreview = null">关闭</button>
+        </div>
+        <div class="max-h-[70vh] overflow-auto">
+          <table class="w-full min-w-[900px] text-left text-[11px]">
+            <thead class="sticky top-0 bg-emerald-50 text-emerald-900/70">
+              <tr>
+                <th v-for="label in ['日期','合同号','货号','货名','每箱个数','类别','毛重','净重','体积','客户','港口','来源','状态']" :key="label" class="px-2 py-1.5 font-medium">{{ label }}</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              <tr v-for="(row, index) in exportPreview.rows.slice(0, 200)" :key="`${rowKey(row)}-${index}`">
+                <td class="px-2 py-1.5">{{ row.date || '-' }}</td>
+                <td class="px-2 py-1.5">{{ row.contractNo || '-' }}</td>
+                <td class="px-2 py-1.5 font-semibold text-emerald-800">{{ row.code }}</td>
+                <td class="max-w-[180px] truncate px-2 py-1.5">{{ row.name }}</td>
+                <td class="px-2 py-1.5">{{ row.perCarton }}</td>
+                <td class="px-2 py-1.5">{{ row.category }}</td>
+                <td class="px-2 py-1.5 text-right">{{ row.gross }}</td>
+                <td class="px-2 py-1.5 text-right">{{ row.net }}</td>
+                <td class="px-2 py-1.5 text-right">{{ row.volume }}</td>
+                <td class="px-2 py-1.5">{{ row.customer }}</td>
+                <td class="px-2 py-1.5">{{ row.port || '-' }}</td>
+                <td class="px-2 py-1.5">{{ row.source }}</td>
+                <td class="px-2 py-1.5">{{ row.status }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="flex items-center justify-between border-t border-slate-100 px-4 py-2 text-[11px] text-slate-500">
+          <span>共 {{ exportPreview.rows.length }} 条{{ exportPreview.rows.length > 200 ? '，预览前 200 条' : '' }}</span>
+          <button type="button" class="rounded border border-emerald-200 px-2 py-1 font-semibold text-emerald-800" @click="exportPreview = null">关闭</button>
+        </div>
+      </div>
+    </div>
+    <div v-if="showExport" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" @click.self="showExport = false">
+      <div class="w-full max-w-sm rounded-xl bg-white p-4 shadow-xl" role="dialog" aria-label="选择导出日期">
+        <div class="flex items-center justify-between">
+          <h3 class="text-[14px] font-bold text-emerald-950">导出货号映射</h3>
+          <button type="button" class="text-slate-400 hover:text-slate-600" @click="showExport = false">关闭</button>
+        </div>
+        <p class="mt-1 text-[11px] text-slate-500">按年月日筛选，留空表示全部。</p>
+        <div class="mt-3 grid grid-cols-3 gap-2">
+          <label class="text-[11px] text-slate-500">年
+            <select v-model="exportYear" class="mt-1 h-8 w-full rounded border border-emerald-200 px-1 text-[12px]">
+              <option value="">全部</option>
+              <option v-for="year in exportYears" :key="year" :value="year">{{ year }}</option>
+            </select>
+          </label>
+          <label class="text-[11px] text-slate-500">月
+            <select v-model="exportMonth" class="mt-1 h-8 w-full rounded border border-emerald-200 px-1 text-[12px]">
+              <option value="">全部</option>
+              <option v-for="month in 12" :key="month" :value="String(month)">{{ month }}</option>
+            </select>
+          </label>
+          <label class="text-[11px] text-slate-500">日
+            <select v-model="exportDay" class="mt-1 h-8 w-full rounded border border-emerald-200 px-1 text-[12px]">
+              <option value="">全部</option>
+              <option v-for="day in 31" :key="day" :value="String(day)">{{ day }}</option>
+            </select>
+          </label>
+        </div>
+        <div class="mt-4 flex justify-end gap-2">
+          <button type="button" class="h-8 rounded-lg border border-slate-200 px-3 text-[12px] font-semibold text-slate-600" @click="showExport = false">取消</button>
+          <button type="button" class="h-8 rounded-lg bg-emerald-700 px-4 text-[12px] font-semibold text-white" @click="exportRows">导出</button>
+        </div>
+      </div>
+    </div>
+    <div v-if="showAdd" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" @click.self="showAdd = false">
+      <div class="w-full max-w-lg rounded-xl bg-white p-4 shadow-xl" role="dialog" aria-label="新增货号映射">
+        <div class="flex items-center justify-between">
+          <h3 class="text-[14px] font-bold text-emerald-950">新增货号映射</h3>
+          <button type="button" class="text-slate-400 hover:text-slate-600" @click="showAdd = false">关闭</button>
+        </div>
+        <div class="mt-3 grid gap-2 sm:grid-cols-2">
+          <label class="text-[11px] text-slate-500">货号 *<input v-model="addForm.code" class="mt-1 h-8 w-full rounded border border-emerald-200 px-2 text-[12px]"></label>
+          <label class="text-[11px] text-slate-500">货名<input v-model="addForm.name" class="mt-1 h-8 w-full rounded border border-emerald-200 px-2 text-[12px]"></label>
+          <label class="text-[11px] text-slate-500">客户<input v-model="addForm.customer" class="mt-1 h-8 w-full rounded border border-emerald-200 px-2 text-[12px]"></label>
+          <label class="text-[11px] text-slate-500">每箱个数<input v-model="addForm.perCarton" class="mt-1 h-8 w-full rounded border border-emerald-200 px-2 text-[12px]"></label>
+          <label class="text-[11px] text-slate-500">类别<input v-model="addForm.category" class="mt-1 h-8 w-full rounded border border-emerald-200 px-2 text-[12px]"></label>
+          <label class="text-[11px] text-slate-500">港口<input v-model="addForm.port" class="mt-1 h-8 w-full rounded border border-emerald-200 px-2 text-[12px]"></label>
+          <label class="text-[11px] text-slate-500">每箱毛重<input v-model="addForm.gross" class="mt-1 h-8 w-full rounded border border-emerald-200 px-2 text-[12px]"></label>
+          <label class="text-[11px] text-slate-500">每箱净重<input v-model="addForm.net" class="mt-1 h-8 w-full rounded border border-emerald-200 px-2 text-[12px]"></label>
+          <label class="text-[11px] text-slate-500">体积<input v-model="addForm.volume" class="mt-1 h-8 w-full rounded border border-emerald-200 px-2 text-[12px]"></label>
+          <label class="text-[11px] text-slate-500">备注<input v-model="addForm.note" class="mt-1 h-8 w-full rounded border border-emerald-200 px-2 text-[12px]"></label>
+        </div>
+        <div class="mt-4 flex justify-end gap-2">
+          <button type="button" class="h-8 rounded-lg border border-emerald-200 px-3 text-[12px] font-semibold text-emerald-800" @click="showAdd = false">取消</button>
+          <button type="button" class="h-8 rounded-lg bg-emerald-700 px-4 text-[12px] font-semibold text-white disabled:opacity-60" :disabled="addSaving" @click="saveAdd">保存</button>
+        </div>
+      </div>
     </div>
   </section>
 </template>

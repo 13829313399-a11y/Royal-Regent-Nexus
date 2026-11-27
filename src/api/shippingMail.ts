@@ -168,6 +168,17 @@ export interface WorkbookPreviewSheet {
   cells?: WorkbookPreviewCell[][]
 }
 
+export async function updateLoadingSheetHeader(
+  factoryId: string,
+  sheetId: string,
+  header: Partial<Pick<LoadingHeader, 'contractNo' | 'soNo' | 'vessel' | 'voyage' | 'plate' | 'containerNo' | 'sealNo' | 'tareWeight'>>,
+) {
+  const { data } = await http.patch<{ updated: boolean; filename: string; path: string }>(
+    `/shipping/loading-sheets/${sheetId}/header`, header, { params: { factory_id: factoryId } },
+  )
+  return data
+}
+
 export async function openLoadingSheet(factoryId: string, sheetId: string) {
   const { data } = await http.post<{ opened?: boolean; path: string; filename: string; sheets?: WorkbookPreviewSheet[] }>(`/shipping/loading-sheets/${sheetId}/open`, null, {
     params: { factory_id: factoryId },
@@ -800,6 +811,15 @@ export interface CodeMappingImportRow {
   tone: 'blue' | 'orange' | 'red'
 }
 
+export async function exportCodeMappingRows(factoryId: string, date: string, rows: Array<Record<string, unknown>>) {
+  const { data } = await http.post<{ path: string; filename: string; count: number }>('/shipping/code-mappings/export', {
+    factory_id: factoryId,
+    date,
+    rows,
+  })
+  return data
+}
+
 export async function importCodeMappingFile(factoryId: string, file: File): Promise<{ filename: string; rows: CodeMappingImportRow[]; count: number }> {
   const form = new FormData()
   form.append('factory_id', factoryId)
@@ -892,6 +912,13 @@ export async function previewGeneratedDoc(factoryId: string, docId: string) {
 export async function previewLoadingSheet(factoryId: string, sheetId: string) {
   const { data } = await http.post<{ opened: boolean; path: string; filename?: string; sheets?: WorkbookPreviewSheet[] }>(
     `/shipping/loading-sheets/${sheetId}/preview`, null, { params: { factory_id: factoryId } },
+  )
+  return data
+}
+
+export async function updateGeneratedDocHeader(factoryId: string, docId: string, header: { contractNo?: string; plate?: string; remark?: string }) {
+  const { data } = await http.patch<{ updated: boolean; filename: string; path: string }>(
+    `/shipping/generated-docs/${docId}/header`, header, { params: { factory_id: factoryId } },
   )
   return data
 }

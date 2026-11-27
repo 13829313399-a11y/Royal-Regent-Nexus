@@ -256,6 +256,7 @@ def _render_template(payload: dict) -> bytes:
     write(12, 13, str(header.get('consolidator') or ''))
     write(13, 13, str(header.get('scheduleText') or ''))
     write(14, 13, f"车牌：{header.get('plate') or ''}")
+    write(15, 13, str(header.get('exceptionNote') or ''))
     write(17, 13, f"品牌：{header.get('brandNote') or ''}")
     for col in range(12, 19):
         write(19, col, '')

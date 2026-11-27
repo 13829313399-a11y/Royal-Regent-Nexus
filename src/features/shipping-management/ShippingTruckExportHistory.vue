@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { AlertTriangle, Download, Trash2, X } from '@lucide/vue'
 import { getApiErrorMessage } from '@/lib/http'
 import {
   deleteGeneratedDoc,
   downloadGeneratedDoc,
+  getGeneratedDoc,
   listGeneratedDocs,
   openGeneratedDoc,
+  updateGeneratedDocHeader,
   type GeneratedDoc,
   type WorkbookPreviewSheet,
 } from '@/api/shippingMail'
@@ -25,7 +27,16 @@ const exceptionDoc = ref<GeneratedDoc | null>(null)
 const exceptionType = ref<'short' | 'damaged' | ''>('')
 const exceptionStep = ref<'exchange' | 'material' | 'carton' | ''>('')
 const exceptionNote = ref('')
-const exceptionStatuses = ref<Record<string, { type: string; step: string; note: string }>>({})
+const exceptionQuantities = reactive({ exchange: '', material: '', carton: '' })
+const exceptionRemark = ref('')
+const exceptionQuantity = computed({
+  get: () => exceptionQuantities[exceptionStep.value as 'exchange' | 'material' | 'carton'] ?? '',
+  set: (value: string) => { if (exceptionStep.value) exceptionQuantities[exceptionStep.value] = value },
+})
+const exceptionContractNo = ref('')
+const exceptionPlate = ref('')
+const exceptionSaving = ref(false)
+const exceptionStatuses = ref<Record<string, { type: string; step: string; note: string; quantity?: string; quantities?: Record<string, string>; remark?: string; contractNo?: string; plate?: string }>>({})
 const previewState = ref<{ doc: GeneratedDoc; path: string; sheets: WorkbookPreviewSheet[] } | null>(null)
 
 function viewedKey(id: string) {
@@ -62,29 +73,72 @@ function loadExceptionStatuses() {
   exceptionStatuses.value = next
 }
 
+const exceptionQuantityLabel = computed(() => exceptionStep.value === 'exchange' ? '换货数量' : exceptionStep.value === 'material' ? '补料数量' : exceptionStep.value === 'carton' ? '补纸箱数量' : '数量')
+
 function exceptionLabel(doc: GeneratedDoc) {
   const status = exceptionStatuses.value[doc.id]
   if (!status) return ''
   const type = status.type === 'short' ? '少货' : status.type === 'damaged' ? '破损' : '异常'
   const step = status.step === 'exchange' ? '进行换货' : status.step === 'material' ? '补料' : status.step === 'carton' ? '补纸箱' : ''
-  return step ? `${type} → ${step}` : type
+  const quantityValue = status.quantities?.[status.step] || status.quantity || ''
+  const quantity = quantityValue ? ` · 数量 ${quantityValue}` : ''
+  return step ? `${type} → ${step}${quantity}` : `${type}${quantity}`
 }
 
-function openException(doc: GeneratedDoc) {
+async function openException(doc: GeneratedDoc) {
   exceptionDoc.value = doc
   const status = exceptionStatuses.value[doc.id]
   exceptionType.value = (status?.type as 'short' | 'damaged' | undefined) || ''
   exceptionStep.value = (status?.step as 'exchange' | 'material' | 'carton' | undefined) || ''
   exceptionNote.value = status?.note || ''
+  exceptionRemark.value = status?.remark || ''
+  exceptionQuantities.exchange = String(status?.quantities?.exchange || (status?.step === 'exchange' ? status?.quantity : '') || '')
+  exceptionQuantities.material = String(status?.quantities?.material || (status?.step === 'material' ? status?.quantity : '') || '')
+  exceptionQuantities.carton = String(status?.quantities?.carton || (status?.step === 'carton' ? status?.quantity : '') || '')
+  exceptionContractNo.value = ''
+  exceptionPlate.value = ''
+  try {
+    const detail = await getGeneratedDoc(props.factoryId, doc.id)
+    exceptionContractNo.value = String(detail.header?.contractNo || '')
+    exceptionPlate.value = String(detail.header?.plate || '')
+  } catch {
+    // leave fields blank if detail cannot be loaded
+  }
 }
 
-function saveException() {
-  if (!exceptionDoc.value || !exceptionType.value) return
-  const status = { type: exceptionType.value, step: exceptionStep.value, note: exceptionNote.value.trim() }
-  window.localStorage.setItem(exceptionKey(exceptionDoc.value.id), JSON.stringify(status))
-  exceptionStatuses.value = { ...exceptionStatuses.value, [exceptionDoc.value.id]: status }
-  message.value = `已保存 ${exceptionDoc.value.filename} 的异常处理`
-  exceptionDoc.value = null
+async function saveException() {
+  if (!exceptionDoc.value || (!exceptionType.value && !exceptionContractNo.value && !exceptionPlate.value)) return
+  exceptionSaving.value = true
+  try {
+    const stepLabel = exceptionStep.value === 'exchange' ? '换货' : exceptionStep.value === 'material' ? '补料' : exceptionStep.value === 'carton' ? '补纸箱' : ''
+    const quantityValue = exceptionQuantity.value.trim()
+    const remark = exceptionRemark.value.trim() || `${stepLabel}${quantityValue}`
+    const result = await updateGeneratedDocHeader(props.factoryId, exceptionDoc.value.id, {
+      contractNo: exceptionContractNo.value,
+      plate: exceptionPlate.value,
+      remark,
+    })
+    const status = {
+      type: exceptionType.value,
+      step: exceptionStep.value,
+      note: exceptionNote.value.trim(),
+      quantity: exceptionQuantity.value.trim(),
+      quantities: { ...exceptionQuantities },
+      remark,
+      contractNo: exceptionContractNo.value,
+      plate: exceptionPlate.value,
+    }
+    window.localStorage.setItem(exceptionKey(exceptionDoc.value.id), JSON.stringify(status))
+    exceptionStatuses.value = { ...exceptionStatuses.value, [exceptionDoc.value.id]: status }
+    await load()
+    message.value = `已保存异常处理并替换原文件：${result.path}`
+    emit('notify', `已保存并覆盖 ${result.filename}`)
+    exceptionDoc.value = null
+  } catch (error) {
+    message.value = `保存失败：${getApiErrorMessage(error)}`
+  } finally {
+    exceptionSaving.value = false
+  }
 }
 
 async function load() {
@@ -222,7 +276,7 @@ defineExpose({ refresh: load })
         <div class="flex items-center gap-3">
           <button type="button" class="inline-flex items-center gap-1 text-emerald-700 disabled:opacity-40" :disabled="busy" @click="download(doc)"><Download class="size-3" />下载</button>
           <button type="button" class="text-emerald-700 disabled:opacity-40" :disabled="busy" @click="open(doc)">打开</button>
-          <button type="button" class="inline-flex items-center gap-1 text-amber-700 disabled:opacity-40" :disabled="busy" @click="openException(doc)"><AlertTriangle class="size-3" />异常</button>
+          <button type="button" class="inline-flex max-w-[180px] items-center gap-1 truncate text-amber-700 disabled:opacity-40" :class="exceptionStatuses[doc.id] ? 'font-semibold' : ''" :disabled="busy" :title="exceptionLabel(doc) || '异常处理'" @click="openException(doc)"><AlertTriangle class="size-3 shrink-0" /><span class="truncate">{{ exceptionLabel(doc) || '异常' }}</span></button>
           <button type="button" class="inline-flex items-center gap-1 text-rose-600 disabled:opacity-40" :disabled="busy" @click="remove(doc)"><Trash2 class="size-3" />删除</button>
         </div>
       </div>
@@ -239,6 +293,10 @@ defineExpose({ refresh: load })
           <button type="button" class="text-slate-500" aria-label="关闭" @click="exceptionDoc = null"><X class="size-4" /></button>
         </header>
         <div class="space-y-4 p-4">
+          <div class="grid grid-cols-2 gap-2">
+            <label class="block text-[11px] font-semibold text-slate-600">合同号<input v-model="exceptionContractNo" class="mt-1 h-9 w-full rounded-lg border border-slate-200 px-2 text-[12px]"></label>
+            <label class="block text-[11px] font-semibold text-slate-600">车牌<input v-model="exceptionPlate" class="mt-1 h-9 w-full rounded-lg border border-slate-200 px-2 text-[12px]"></label>
+          </div>
           <div>
             <p class="text-[11px] font-semibold text-slate-600">异常情况</p>
             <div class="mt-1 flex flex-wrap gap-2">
@@ -254,12 +312,18 @@ defineExpose({ refresh: load })
               <button type="button" class="rounded-lg border px-3 py-1.5 text-[11px] font-semibold" :class="exceptionStep === 'carton' ? 'border-emerald-400 bg-emerald-50 text-emerald-800' : 'border-slate-200 text-slate-600'" @click="exceptionStep = 'carton'">3. 补纸箱</button>
             </div>
           </div>
+          <label v-if="exceptionStep" class="block text-[11px] font-semibold text-slate-600">{{ exceptionQuantityLabel }}
+            <input v-model="exceptionQuantity" type="number" min="0" step="1" placeholder="请输入数量" class="mt-1 h-9 w-full rounded-lg border border-slate-200 px-2 text-[12px]">
+          </label>
+          <label class="block text-[11px] font-semibold text-slate-600">表格备注
+            <input v-model="exceptionRemark" :placeholder="`${exceptionStep === 'exchange' ? '换货' : exceptionStep === 'material' ? '补料' : exceptionStep === 'carton' ? '补纸箱' : ''}${exceptionQuantity}`" class="mt-1 h-9 w-full rounded-lg border border-slate-200 px-2 text-[12px]">
+          </label>
           <label class="block text-[11px] font-semibold text-slate-600">备注
             <input v-model="exceptionNote" placeholder="异常数量、补料说明" class="mt-1 h-9 w-full rounded-lg border border-slate-200 px-2 text-[12px]">
           </label>
           <div class="flex justify-end gap-2">
             <button type="button" class="h-8 rounded-lg border border-slate-200 px-3 text-[11px] font-semibold text-slate-600" @click="exceptionDoc = null">取消</button>
-            <button type="button" class="h-8 rounded-lg bg-amber-600 px-3 text-[11px] font-semibold text-white disabled:opacity-40" :disabled="!exceptionType" @click="saveException">保存异常</button>
+            <button type="button" class="h-8 rounded-lg bg-amber-600 px-3 text-[11px] font-semibold text-white disabled:opacity-40" :disabled="exceptionSaving" @click="saveException">{{ exceptionSaving ? '保存中…' : '保存并替换原文件' }}</button>
           </div>
         </div>
       </section>

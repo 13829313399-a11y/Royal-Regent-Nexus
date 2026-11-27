@@ -99,12 +99,6 @@ async function importCabinet(payload: { taskId: string; filename: string; header
         <div class="flex flex-wrap items-center gap-2">
           <h2 class="text-[14px] font-bold text-emerald-950">SO 出货表</h2>
           <p class="text-[10px] text-slate-500">柜货单模块 · 使用 DK 盐田 W11 柜模板，填色与公式与原表一致</p>
-          <div class="inline-flex rounded-lg border border-emerald-200 bg-white p-0.5">
-            <button
-              type="button"
-              class="h-7 rounded-md bg-emerald-700 px-2.5 text-[11px] font-semibold text-white"
-            >柜表</button>
-          </div>
         </div>
         <div class="flex flex-wrap items-center gap-2">
           <input

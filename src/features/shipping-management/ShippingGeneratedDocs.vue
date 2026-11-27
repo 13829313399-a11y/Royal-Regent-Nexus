@@ -35,7 +35,6 @@ const detail = ref<GeneratedDocDetail | null>(null)
 const showDetail = ref(false)
 const loadingDetail = ref(false)
 const saving = ref(false)
-
 const isSo = computed(() => props.module === 'so')
 const selectedDoc = computed(() => docs.value.find((doc) => doc.id === selectedId.value) ?? null)
 const allDocsSelected = computed(() => docs.value.length > 0 && docs.value.every((doc) => selectedDocIds.value.includes(doc.id)))

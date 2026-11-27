@@ -1,6 +1,7 @@
 """Parse a standalone shipping-code mapping workbook."""
 from __future__ import annotations
 
+import csv
 import io
 import re
 from datetime import date, datetime
@@ -103,6 +104,23 @@ def _port(mode: str) -> str:
         if port in _text(mode):
             return port
     return '-'
+
+
+def export_rows(rows: list[dict], label: str = '') -> dict:
+    from app.services.shipping_exports import EXPORT_ROOT
+    folder = EXPORT_ROOT / '货号映射'
+    folder.mkdir(parents=True, exist_ok=True)
+    filename = f"货号映射_{label or datetime.now().strftime('%Y-%m-%d')}.csv"
+    target = folder / filename
+    headers = ['日期', '合同号', '货号', '货名', '每箱个数', '类别', '毛重', '净重', '体积', '客户', '港口', '来源', '状态']
+    keys = ['date', 'contractNo', 'code', 'name', 'perCarton', 'category', 'gross', 'net', 'volume', 'customer', 'port', 'source', 'status']
+    target.write_text('', encoding='utf-8-sig')
+    with target.open('a', encoding='utf-8-sig', newline='') as handle:
+        writer = csv.writer(handle)
+        writer.writerow(headers)
+        for row in rows:
+            writer.writerow([row.get(key, '') for key in keys])
+    return {'path': str(target), 'filename': filename, 'count': len(rows)}
 
 
 def parse_code_mapping_workbook(raw: bytes, filename: str) -> list[dict]:
