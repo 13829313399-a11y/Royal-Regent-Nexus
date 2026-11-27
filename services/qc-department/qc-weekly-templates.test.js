@@ -20,6 +20,7 @@ function page(options={}){
     return response({...body,version:body.baseVersion+1});
   };
   if(options.storage)for(const [k,v]of Object.entries(options.storage))w.localStorage.setItem(k,v);
+  w.eval(fs.readFileSync(path.join(__dirname,'qc-export-columns.js'),'utf8'));
   w.eval(fs.readFileSync(path.join(__dirname,'qc-daily-report.js'),'utf8'));
   w.QcPeriodReports.weekly.load=()=>{};
   w.eval(fs.readFileSync(path.join(__dirname,'qc-weekly-templates.js'),'utf8'));d.dispatchEvent(new w.Event('DOMContentLoaded'));
@@ -211,13 +212,13 @@ test('template width is scoped; Excel exports selected template, saved versions 
     const captures=[];let link;
     p.d.addEventListener('click',e=>{if(e.target.tagName==='A'){link={url:e.target.getAttribute('href'),name:e.target.download};e.preventDefault();}},true);
     const original=p.w.fetch;
-    p.w.fetch=async(url,init)=>{if(url.endsWith('/excel')){captures.push(JSON.parse(init.body));return p.response({url:'api/weekly-templates/excel/abc123.token',filename:'表格.xls'});}return original(url,init);};
+    p.w.fetch=async(url,init)=>{if(url==='api/weekly-templates/excel/abc123.token')return require('./fixtures/export-attachment.cjs')(p.w,'xls');if(url.endsWith('/excel')){captures.push(JSON.parse(init.body));return p.response({url:'api/weekly-templates/excel/abc123.token',filename:'表格.xls'});}return original(url,init);};
     await p.w.QcWeeklyTemplates.open('detail');
     assert(p.d.getElementById('weeklyReportContent').classList.contains('qwt-open'));
     p.d.getElementById('qwtExcel').click();await tick();
     assert.equal(captures.at(-1).template,'detail');assert.equal('paper' in captures.at(-1),false);
     assert.deepEqual(captures.at(-1).versions,{[key]:Object.fromEntries(fields.map(f=>[f,0]))});
-    assert.equal(link.url,'api/weekly-templates/excel/abc123.token');
+    assert.deepEqual(link,{url:'blob:verified-attachment',name:'表格.xls'});
     p.w.QcWeeklyTemplates.returnToReport();assert(!p.d.getElementById('weeklyReportContent').classList.contains('qwt-open'));
     await p.w.QcWeeklyTemplates.open('detail');
     const customer=p.d.getElementById('qwtCustomer');customer.value=key;customer.dispatchEvent(new p.w.Event('change'));await tick();

@@ -16,6 +16,7 @@ test('fit keeps the existing sheet and proportions, never enlarges it, and floor
   let onResize;
   w.ResizeObserver=class{constructor(callback){onResize=callback;}observe(){}};
   w.fetch=async()=>({ok:true,json:async()=>({sheets:[{name:'明细',html:'<table><colgroup width="38"><colgroup span="5" width="300"><tbody><tr><td data-addr="A1">内容</td></tr></tbody></table>'}],cells:{}})});
+  w.eval(fs.readFileSync(path.join(__dirname,'qc-export-columns.js'),'utf8'));
   w.eval(fs.readFileSync(path.join(__dirname,'qc-report-workbook.js'),'utf8'));
   const view=d.getElementById('wb-grid');
   let available=1400;
@@ -54,6 +55,7 @@ test('monthly preview opens the filtered workbook, confirms edits before switchi
     if (q.get('kind') === 'tracking') result = {sheets:[],cells:{}};
     return {ok:true,json:async()=>result};
   };
+  w.eval(fs.readFileSync(path.join(__dirname,'qc-export-columns.js'),'utf8'));
   w.eval(fs.readFileSync(path.join(__dirname,'qc-report-workbook.js'),'utf8'));
   try {
     w.QcReportWorkbook.mount('monthly','quality',doc.getElementById('summary'),{date:'2026-11-01',tables:{quality:[]},overview:{months:[{month:1,rate:0}]}},()=>{});
@@ -213,6 +215,7 @@ async function exportWorkbook(t, period='monthly', kind='quality', options={}){
       write:async blob=>written.push(blob),close:async()=>written.push('closed'),abort:async()=>written.push('aborted'),
     })});
   };
+  w.eval(fs.readFileSync(path.join(__dirname,'qc-export-columns.js'),'utf8'));
   w.eval(fs.readFileSync(path.join(__dirname,'qc-report-workbook.js'),'utf8'));
   const mountData={overview:{months:[]},months:[],tables:{}};
   w.QcReportWorkbook.mount(period,kind,d.getElementById('summary'),mountData,()=>{});
@@ -329,6 +332,20 @@ test('all eight report types obtain and validate the attachment before the syste
   }
 });
 
+test('changing the column preference discards a prepared workbook and reissues the scoped export',async t=>{
+  const h=await exportWorkbook(t,'monthly','quality',{slow:true});
+  const exportButton=h.d.querySelector('#wb-export'),toggle=h.d.querySelector('#wb-dialog .qc-export-option input');
+  assert.ok(toggle.checked);
+  exportButton.click();await new Promise(setImmediate);
+  assert.equal(exportButton.textContent,'选择保存位置');
+  toggle.click();
+  assert.equal(exportButton.textContent,'导出 Excel');
+  exportButton.click();await new Promise(setImmediate);
+  assert.deepEqual(h.calls.filter(c=>c.method==='POST').map(c=>c.payload.hideEmptyCols),[true,false]);
+  assert.equal(h.w.localStorage.getItem('qc.export.hideEmptyCols'),'0');
+  assert.deepEqual(h.picks,[]);
+});
+
 test('confirmation saves the draft first; slow generation requests a new click on the same button',async t=>{
   let select;
   const writes=[];
@@ -355,7 +372,7 @@ test('confirmation saves the draft first; slow generation requests a new click o
   })});
   await new Promise(setImmediate);
   assert.deepEqual(writes,[h.body,'closed']);
-  assert.equal(d.getElementById('wb-status').textContent,'Excel 已保存并校验：核对后的月报.xlsx');
+  assert.match(d.getElementById('wb-status').textContent,/^Excel 已保存并校验：核对后的月报\.xlsx/);
   assert.equal(d.getElementById('wb-export').textContent,'导出 Excel');
   assert.equal(w.QcReportWorkbook.navigationState().dirty,false);
 });
@@ -473,6 +490,7 @@ async function editableWorkbook(t, {readonly=false,record=false}={}) {
     const version=++versions[body.field];
     return {ok:true,json:async()=>({...body,version})};
   };
+  w.eval(fs.readFileSync(path.join(__dirname,'qc-export-columns.js'),'utf8'));
   w.eval(fs.readFileSync(path.join(__dirname,'qc-report-workbook.js'),'utf8'));
   w.QcReportWorkbook.mount('monthly','quality',doc.getElementById('summary'),{overview:{months:[]}},()=>{});
   doc.querySelector('.wb-open').click();
@@ -806,6 +824,7 @@ test('workbook photo retry and thumbnail error refresh stale approved revision w
   };
   w.eval(fs.readFileSync(path.join(__dirname,'qc-photo-shapes.js'),'utf8'));
   w.eval(fs.readFileSync(path.join(__dirname,'qc-inspection-summary.js'),'utf8'));
+  w.eval(fs.readFileSync(path.join(__dirname,'qc-export-columns.js'),'utf8'));
   w.eval(fs.readFileSync(path.join(__dirname,'qc-report-workbook.js'),'utf8'));
   w.QcReportWorkbook.mount('monthly','tracking',doc.getElementById('summary'),{tables:{tracking:[{values:Array(19).fill('')}]},total:1},()=>{});
   doc.querySelector('.wb-open').click();

@@ -45,6 +45,9 @@ CREATE TABLE IF NOT EXISTS changes (
  action TEXT NOT NULL, actor TEXT NOT NULL, created_at TEXT NOT NULL, snapshot TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS exports (
  id TEXT PRIMARY KEY, factory TEXT NOT NULL, actor TEXT NOT NULL, expires INTEGER NOT NULL, content BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS review_reads (
+ factory TEXT NOT NULL, actor_id TEXT NOT NULL, entry_id TEXT NOT NULL REFERENCES entries(id),
+ revision INTEGER NOT NULL, read_at TEXT NOT NULL, PRIMARY KEY(factory,actor_id,entry_id));
 '''
 
 
@@ -272,6 +275,37 @@ def review_notifications(factory, actor, body=None, *, action):
 
 def reversal_notifications(factory, actor, body=None):
     return review_notifications(factory, actor, body, action='revoke')
+
+
+def review_read_versions(factory, actor_id):
+    with store() as conn:
+        return dict(conn.execute('SELECT entry_id,revision FROM review_reads WHERE factory=? AND actor_id=?',
+                                 (factory, actor_id)))
+
+
+def mark_review_read(factory, actor_id, body):
+    ids, versions = body.get('entryIds'), body.get('revisions')
+    if (set(body) != {'entryIds', 'revisions'} or not isinstance(ids, list) or not 1 <= len(ids) <= 500
+            or any(not isinstance(i, str) or not re.fullmatch(r'[a-f0-9]{32}', i) for i in ids)
+            or len(ids) != len(set(ids))
+            or not isinstance(versions, dict) or set(versions) != set(ids)
+            or any(type(v) is not int or v < 0 for v in versions.values())):
+        raise HTTPException(422, '待审核记录或阅读版本不正确')
+    saved = {}
+    with store(True) as conn:
+        placeholders = ','.join('?' for _ in ids)
+        for row in conn.execute(f"""SELECT e.id,e.revision FROM entries e
+            LEFT JOIN entry_details d ON d.entry_id=e.id
+            WHERE e.factory=? AND COALESCE(d.deleted_at,'')=''
+              AND (d.review_state='pending' OR (COALESCE(d.flow_version,0)=0
+                   AND json_extract(e.base,'$.legacyReviewState') IN ('pending','returned')))
+              AND e.id IN ({placeholders})""", (factory, *ids)):
+            if versions[row['id']] == row['revision']:
+                saved[row['id']] = row['revision']
+        conn.executemany("""INSERT INTO review_reads VALUES(?,?,?,?,?)
+            ON CONFLICT(factory,actor_id,entry_id) DO UPDATE SET revision=excluded.revision,read_at=excluded.read_at""",
+            [(factory, actor_id, entry_id, version, wf.now()) for entry_id, version in saved.items()])
+    return {'read': saved}
 
 
 def unpack(conn, row, include_photos=True):
@@ -535,7 +569,7 @@ def normalize_photo(content):
         raise HTTPException(422,'图片损坏或格式不支持，请选择 JPG、PNG、WebP，或将手机照片转为 JPEG 后重试') from None
 
 
-def add_photo(factory, entry_id, body, actor, review=False):
+def add_photo(factory, entry_id, body, actor, review=False, *, include_upload_id=False):
     if set(body) != {'revision','name','content','requestKey'} or not re.fullmatch(r'[a-f0-9-]{16,64}',str(body['requestKey'])):
         raise HTTPException(422,'照片提交字段不正确')
     name=body['name']
@@ -550,11 +584,14 @@ def add_photo(factory, entry_id, body, actor, review=False):
     with store(True) as conn:
         row=get(conn,factory,entry_id)
         origin='upload:'+body['requestKey']
-        previous=conn.execute('SELECT digest FROM photos WHERE entry_id=? AND origin=?',(entry_id,origin)).fetchone()
+        previous=conn.execute('SELECT id,digest FROM photos WHERE entry_id=? AND origin=?',(entry_id,origin)).fetchone()
         if previous:
             if previous['digest'] != digest and previous['digest'] != sha256(normalize_photo(content)).hexdigest():
                 raise HTTPException(409,'同一上传编号不能用于不同照片')
-            return unpack(conn,row)
+            saved = unpack(conn,row)
+            if include_upload_id:
+                saved['uploadedPhotoId'] = previous['id']
+            return saved
         ensure_editable(conn,row,review)
         before=unpack(conn,row)
         revision(row,body)
@@ -566,7 +603,10 @@ def add_photo(factory, entry_id, body, actor, review=False):
         photo_id=uuid4().hex
         conn.execute('INSERT INTO photos VALUES(?,?,?,?,?,?,0,?)',(photo_id,entry_id,name,b'',digest,origin,wf.now()))
         photo_assets.save(conn,photo_id,content,'preview-only',details=details)
-        return changed(conn,row,'upload',actor,before=before,location='审核中心 · 待审核' if review else '验货台')
+        saved=changed(conn,row,'upload',actor,before=before,location='审核中心 · 待审核' if review else '验货台')
+        if include_upload_id:
+            saved['uploadedPhotoId'] = photo_id
+        return saved
 
 
 def remove_photo(factory, entry_id, body, actor, review=False):

@@ -1,14 +1,20 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
 const {JSDOM}=require('jsdom');const tick=()=>new Promise(r=>setTimeout(r,10));
-async function page(withWorkbook=false){
+async function page(withWorkbook=false,withGuides=false){
  const dom=new JSDOM(fs.readFileSync(path.join(__dirname,'index.html'),'utf8'),{runScripts:'outside-only',url:'http://localhost/'}),w=dom.window,calls=[];
  w.requestAnimationFrame=fn=>w.setTimeout(fn,0);w.cancelAnimationFrame=id=>w.clearTimeout(id);Object.defineProperty(w.document,'hidden',{value:false});w.document.getElementById('page-review').classList.add('active');
   w.__QC_NEXUS={workflow:{edit:true},exportAllowed:false,...(withWorkbook?{factory:'huaxing',factoryLabel:'华兴'}:{})};w.showToast=()=>{};
   w.HTMLElement.prototype.scrollTo=function(){};
  w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};
  const rows=['a','b','c'].map((id,i)=>({id,customer:'客户'+i,poNo:'PO'+i,productNo:'ITEM'+i,dateFrom:'2026-11-03',dateTo:'2026-11-03',result:'PASS',remark:'原备注',improvement:'原措施',inspectionMethod:'internal',photos:[],revision:1,submittedAt:'2026-11-01T17:00:00Z',reviewState:'pending',flowVersion:2,lastActor:{name:'后台用户'},lastLocation:'验货台',lastChangedAt:'2026-11-01T17:00:00Z'}));
- let failId='',eventId=0;const events=[],seen=new Set();w.fetch=async(url,opts={})=>{
+  if(withGuides){
+    w.__QC_NEXUS.workflow.review=false;
+    w.__QC_NEXUS.workflow.reviewReads=true;
+    rows.forEach((row,i)=>row.reviewRead=i===2);
+    w.eval(fs.readFileSync(path.join(__dirname,'qc-glass-guide.js'),'utf8'));
+  }
+  let failId='',eventId=0;const events=[],seen=new Set();w.fetch=async(url,opts={})=>{
   const body=opts.body?JSON.parse(opts.body):null;calls.push({url,body});let value;
   if(url.endsWith('/options'))return {ok:true,json:async()=>({inspectors:[{id:'qc-test',name:'测试检验员'}],institutions:[]})};
   if(url.endsWith('/notifications')){
@@ -17,7 +23,10 @@ async function page(withWorkbook=false){
   }
   else if(url.endsWith('/notifications/shown')){body.eventIds.forEach(id=>seen.add(id));value={shown:body.eventIds};}
   else if(url.endsWith('/entries'))value={results:['PASS','FAIL','PENDING','LG'],items:structuredClone(url.includes('review/')?rows:rows.filter(r=>r.reviewState==='returned_to_inspection')),columns:['date','customer','poNo','country','productNo','productName','quantity','unitsPerCarton','cartonCount','production','agency','customerPo','result','remark','photos','improvement','submit'].map(key=>({key,label:key}))};
-  else if(url.endsWith('/save')){const row=rows.find(r=>r.id===url.split('/').at(-2));assert.equal(row.revision,body.revision);Object.assign(row,{...body,...(body.inspectionExecution?{inspectionExecution:{...row.inspectionExecution,...body.inspectionExecution}}:{})},{revision:row.revision+1,lastLocation:'审核中心 · 待审核'});value=structuredClone(row);}
+   else if(url.endsWith('/mark-read')){
+    const read={};for(const row of rows)if(body.revisions[row.id]===row.revision){row.reviewRead=true;read[row.id]=row.revision;}
+    value={read};
+   }else if(url.endsWith('/save')){const row=rows.find(r=>r.id===url.split('/').at(-2));assert.equal(row.revision,body.revision);Object.assign(row,{...body,...(body.inspectionExecution?{inspectionExecution:{...row.inspectionExecution,...body.inspectionExecution}}:{})},{revision:row.revision+1,lastLocation:'审核中心 · 待审核'});value=structuredClone(row);}
   else if(url.endsWith('/photos')){const row=rows.find(r=>r.id===url.split('/').at(-2));assert.equal(row.revision,body.revision);row.photos.push({id:'p-'+row.photos.length,name:body.name});row.revision++;value=structuredClone(row);}
   else if(/review\/(confirm|revoke)$/.test(url)){
    const results=body.entries.map(e=>{if(e.id===failId)return{id:e.id,ok:false,message:'并发版本变化',status:409};const row=rows.find(r=>r.id===e.id);assert.equal(row.revision,e.revision);Object.assign(row,{revision:row.revision+1,reviewState:url.endsWith('confirm')?'approved':'pending',confirmedAt:'2026-11-01T17:25:00Z',lastActor:{name:'后台用户'},lastLocation:url.endsWith('confirm')?'审核中心 · 待审核':'审核中心 · 已审核'});if(url.endsWith('revoke'))row.lastReversal={eventId:++eventId,entryId:row.id,customer:row.customer,poNo:row.poNo,at:'2026-11-01T17:26:00Z',actor:{name:'后台用户'},location:'审核中心 · 已审核',reason:body.reason};if(url.endsWith('revoke'))events.push(structuredClone(row.lastReversal));return{id:e.id,ok:true,item:structuredClone(row),...(url.endsWith('revoke')?{reversal:structuredClone(row.lastReversal)}:{})};});value={results,succeeded:results.filter(r=>r.ok).length,failed:results.filter(r=>!r.ok).length};
@@ -25,7 +34,7 @@ async function page(withWorkbook=false){
   return{ok:true,json:async()=>value};
  };
   for(const file of ['qc-schedule.js','qc-photo-paste.js','qc-inspection-audit.js','qc-inspection-sheet.js'])w.eval(fs.readFileSync(path.join(__dirname,file),'utf8'));
-  if(withWorkbook)for(const file of ['qc-report-workbook.js','qc-review-workbook.js'])w.eval(fs.readFileSync(path.join(__dirname,file),'utf8'));
+  if(withWorkbook)for(const file of ['qc-export-columns.js','qc-report-workbook.js','qc-review-workbook.js'])w.eval(fs.readFileSync(path.join(__dirname,file),'utf8'));
  await tick();await w.QcInspectionSheet.loadReview('pending');return{dom,w,d:w.document,rows,calls,events,set failId(v){failId=v;}};
 }
 function pointer(p,target,type,y){const e=new p.w.MouseEvent(type,{bubbles:true,cancelable:true,button:0,clientY:y});Object.defineProperties(e,{pointerId:{value:1},pointerType:{value:'mouse'}});target.dispatchEvent(e);}
@@ -36,6 +45,33 @@ function dragReview(p,from,to,cancel=false){
  pointer(p,nodes[a].querySelector('td'),'pointerdown',115+a*64);pointer(p,host,'pointermove',115+b*64);pointer(p,host,cancel?'pointercancel':'pointerup',115+b*64);
 }
 function confirmRow(p,id){dragReview(p,id,id);p.d.getElementById('qis-review-batch').click();}
+test('review guidance appears once on entering review, does not re-pop on row clicks, and marks displayed revisions after opening',async()=>{
+ const p=await page(true,true);try{
+  const q=s=>p.d.querySelector(s);
+  const firstGuide=q('.qc-glass-guide');
+  assert.match(q('.qc-guide-copy').textContent,/新上传 2 条.*已读 1 条/);
+  assert.equal(q('.qc-guide-badge').textContent,'2');
+  assert.equal(q('#qis-review-guide-slot'),null);
+  assert.equal(q('.qc-glass-guide button'),null);
+  assert.equal(firstGuide.parentElement,q('.qis-review-surface'));
+  assert.equal(q('.qis-open-review-book').parentElement,q('.qis-review-batch-actions'));
+  const resultFilter=q('#qis-review-controls [data-rfilter="result"]');
+  resultFilter.value='PASS';resultFilter.dispatchEvent(new p.w.Event('input',{bubbles:true}));
+  assert.equal(firstGuide.isConnected,false);
+  resultFilter.value='';resultFilter.dispatchEvent(new p.w.Event('input',{bubbles:true}));
+  confirmRow(p,'a');
+  assert.equal(q('.qc-glass-guide'),null);
+  assert.equal(q('.qc-guide-warning').textContent,'其中 1 条尚未展开查看照片与完整明细');
+  q('[data-view-unread]').click();await tick();
+  assert.equal(q('#wb-dialog').open,true);
+  assert.deepEqual(p.calls.find(c=>c.url.endsWith('/mark-read')).body,{entryIds:['a','b'],revisions:{a:1,b:1}});
+  q('#wb-close').click();await tick();
+  assert.equal(q('.qc-guide-unread'),null);
+  assert.equal(q('.qc-guide-badge').hidden,true);
+  assert.equal(q('#qis-review-guide-slot'),null);
+  assert.equal(p.calls.some(c=>c.url.endsWith('/confirm')),false);
+ }finally{p.dom.window.close();}
+});
 test('pending preview updates the released range after a quick drag ending outside the table',async()=>{
   const p=await page(true);try{
     p.rows[1].result='';await p.w.QcInspectionSheet.loadReview('pending');

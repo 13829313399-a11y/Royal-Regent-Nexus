@@ -21,6 +21,44 @@ def photo(row,color):
  f=BytesIO();Image.new('RGB',(16,12),color).save(f,'PNG')
  return sheet.add_photo('huaxing',row['id'],dict(revision=row['revision'],name=color+'.png',content=base64.b64encode(f.getvalue()).decode(),requestKey=uuid4().hex),ACTOR)
 
+
+def test_read_receipts_are_actor_factory_and_revision_scoped(db):
+  factory='huaxing'
+  row=save(item(db))
+  eid=row['id']
+  assert sheet.mark_review_read(factory,'alice',{'entryIds':[eid],'revisions':{eid:row['revision']}})=={'read':{}}
+  row=sheet.submit(factory,eid,{'revision':row['revision']},ACTOR)
+  stamp=row['revision']
+  seen={'entryIds':[eid],'revisions':{eid:stamp}}
+  assert sheet.mark_review_read('huadeng','alice',seen)=={'read':{}}
+  assert sheet.review_read_versions(factory,'alice')=={}
+  assert sheet.mark_review_read(factory,'alice',seen)=={'read':{eid:stamp}}
+  assert sheet.review_read_versions(factory,'bob')=={}
+  assert sheet.review_read_versions(factory,'alice')=={eid:stamp}
+  returned=sheet.return_to_inspection(factory,eid,{'revision':stamp,'requestKey':uuid4().hex},ACTOR)['item']
+  submitted=sheet.submit(factory,eid,{'revision':returned['revision']},ACTOR)
+  assert submitted['revision']>stamp
+  assert sheet.mark_review_read(factory,'alice',seen)=={'read':{}}
+  assert sheet.review_read_versions(factory,'alice')=={eid:stamp}
+  with pytest.raises(HTTPException) as missing:
+   sheet.mark_review_read(factory,'alice',{'entryIds':[eid]})
+  assert missing.value.status_code==422
+  assert sheet.mark_review_read(factory,'alice',{'entryIds':[eid],'revisions':{eid:submitted['revision']}})=={'read':{eid:submitted['revision']}}
+  with pytest.raises(HTTPException) as invalid:
+   sheet.mark_review_read(factory,'alice',{'entryIds':[eid,eid],'revisions':{eid:submitted['revision']}})
+  assert invalid.value.status_code==422
+
+
+def test_read_receipt_accepts_legacy_pending_without_details(db):
+  factory = 'huaxing'
+  row = item(db)
+  eid, revision = row['id'], row['revision']
+  with sheet.store(True) as conn:
+   conn.execute('DELETE FROM entry_details WHERE entry_id=?', (eid,))
+   conn.execute("UPDATE entries SET base=json_set(base,'$.legacyReviewState','pending') WHERE id=?", (eid,))
+   assert sheet.unpack(conn, sheet.get(conn, factory, eid))['reviewState'] == 'pending'
+  assert sheet.mark_review_read(factory, 'alice', {'entryIds': [eid], 'revisions': {eid: revision}}) == {'read': {eid: revision}}
+
 def test_full_self_review_revoke_reconfirm_photos_and_history(db):
  r=save(item(db));r=photo(photo(r,'red'),'blue');beforephotos=deepcopy(r['photos'])
  r=sheet.submit('huaxing',r['id'],{'revision':r['revision']},ACTOR)

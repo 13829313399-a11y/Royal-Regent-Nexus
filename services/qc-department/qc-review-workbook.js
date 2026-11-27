@@ -20,6 +20,7 @@
     return `<thead><tr>${delHead}${summaryFields.map(([key,label])=>`<th scope="col" data-column="${key}">${label}</th>`).join('')}</tr></thead><tbody>`+
       rows.map(row=>{
         const d=draft(row),group=reviewGroup(row),planned=dateText(row),hint=`${planned}${group?' · '+group:''}`;
+        const unread=row.reviewState==='pending'&&row.reviewRead===false?'<i class="qc-guide-unread" role="img" aria-label="未读"></i>':'';
         const delChecked=Boolean(deleteSelect?.checked?.has(row.id));
         const delCell=deleteSelect?`<td data-column="deleteSelect" class="qis-delete-col"><div class="qis-cell"><input type="checkbox" data-delete-check="${esc(row.id)}" aria-label="勾选删除 ${esc(row.customer+' '+row.poNo)}"${delChecked?' checked':''}></div></td>`:'';
         const preview=(key,defaultLabel='—')=>{
@@ -28,9 +29,9 @@
         };
         return `<tr tabindex="0" data-entry="${esc(row.id)}" aria-selected="false"${delChecked?' class="qis-delete-selected"':''}>`+
           delCell+
-          cell('date',`<span>${esc(planned)}</span>${group?`<small>${esc(group)}</small>`:''}`)+
+          cell('date',`<span>${unread}${esc(planned)}</span>${group?`<small>${esc(group)}</small>`:''}`)+
           cell('customer',audit.reversalBadge(row)+esc(row.customer)+audit.badge(row))+
-          cell('poNo',`<strong>${esc(row.poNo)}</strong><small class="qis-preview-mobile-date" title="${esc(hint)}">${esc(hint)}</small>`)+
+          cell('poNo',`<strong>${esc(row.poNo)}</strong><small class="qis-preview-mobile-date" title="${esc(hint)}">${unread}${esc(hint)}</small>`)+
           cell('productNo',`<strong>${esc(row.productNo)}</strong><small title="${esc(row.productName)}">${esc(row.productName)}</small>`)+
           preview('result','可补')+preview('inspectionProblem')+preview('reportStatus','可补')+preview('remark')+'</tr>';
       }).join('')+'</tbody>';
@@ -303,7 +304,7 @@
     }
     return {book,normalize:canonical,save,requestKey,special,refreshAudit,export:exportSheet,
       busy:()=>Boolean(sectionModal?.open||photoBusy||context.busy?.()),
-      close:()=>{for(const file of files.values())root.URL.revokeObjectURL(file.url);context.close();}};
+      close:()=>{for(const file of files.values())root.URL.revokeObjectURL(file.url);return context.close();}};
   }
   root.QcPendingReviewWorkbook={summary,create};
 })(window);

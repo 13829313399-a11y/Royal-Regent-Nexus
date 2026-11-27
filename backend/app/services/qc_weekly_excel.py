@@ -59,7 +59,7 @@ class CachedFormulaCell(FormulaCell):
                 + struct.pack('<HH', 0x0207, len(payload)) + payload)
 
 
-def render(data, kind):
+def render(data, kind, hidden_columns=()):
     if kind not in ASSETS:
         raise HTTPException(422, '请选择有效的周报模板')
     if not data['total']:
@@ -94,6 +94,8 @@ def render(data, kind):
         book.set_colour_RGB(index,*rgb)
     for col, pixels in enumerate(WIDTHS[kind]):
         target.col(col).width = round((pixels-5)/7*256)
+        if col+1 in hidden_columns:
+            target.col(col).hidden = 1
     target.portrait=False; target.paper_size_code=8 if kind=='detail' else 9
     target.fit_num_pages=True; target.fit_width_to_pages=1; target.fit_height_to_pages=0
     target.print_in_rows=True; target.print_grid=False
@@ -212,6 +214,8 @@ def _clean():
 
 
 def prepare(factory, owner, body):
+    from app.services import qc_report_empty_cols as policy
+    body, enabled = policy.split_option(body)
     keys = {'date', 'customer', 'template', 'sourceRevision', 'versions'}
     if not isinstance(body, dict) or set(body) != keys or any(not isinstance(body[k], str) for k in keys-{'versions'}):
         raise HTTPException(422, 'Excel 导出参数不正确')
@@ -221,7 +225,9 @@ def prepare(factory, owner, body):
     # Compare both source records and all visible saved supplement versions.
     if body['sourceRevision'] != data['sourceRevision'] or body['versions'] != versions(data):
         raise HTTPException(409, '验货记录或周报补充内容已变化，请刷新核对后再导出 Excel')
-    content = render(data, body['template'])
+    kind = body['template']
+    columns = policy.hidden(kind, data['tables'][kind]) if enabled else []
+    content = render(data, kind, columns)
     template = next(t for t in data['templates'] if t['id'] == body['template'])
     filename = template['title']+'_'+data['dateFrom']+'_'+data['dateTo']+'.xls'
     nonce = secrets.token_hex(16)
@@ -236,7 +242,8 @@ def prepare(factory, owner, body):
             stream.write(content)
     except OSError:
         raise HTTPException(503, 'Excel 下载文件暂时无法保存，请重试') from None
-    return dict(url='api/weekly-templates/excel/'+token, filename=filename)
+    return dict(url='api/weekly-templates/excel/'+token, filename=filename,
+                hiddenColumns=[template['headers'][c-1] for c in columns])
 
 
 def download(owner, token):

@@ -71,6 +71,8 @@ def query(factory, day, period, customer='', *, workbook_preview=False, write_en
 
 
 def prepare(factory, owner, body):
+    from app.services.qc_report_empty_cols import split_option
+    body, enabled = split_option(body)
     from app.services import qc_monthly_excel as excel
     required={'date','period','customer','sourceRevision','photoQuality','allowPreviewFallback'}
     if (not isinstance(body,dict) or set(body)!=required
@@ -79,6 +81,7 @@ def prepare(factory, owner, body):
             or type(body['allowPreviewFallback']) is not bool):
         raise HTTPException(422,'图文导出参数不正确')
     data=query(factory,body['date'],body['period'],body['customer'])
+    data.update(hideEmptyCols=enabled, hiddenColumns=[])
     if data['sourceRevision']!=body['sourceRevision']:
         raise HTTPException(409,'验货记录或补录已变化，请刷新预览后重试')
     data.update(photoQuality=body['photoQuality'],allowPreviewFallback=body['allowPreviewFallback'],fallbackPhotos=[])
@@ -89,4 +92,5 @@ def prepare(factory, owner, body):
     quality='mixed' if data['fallbackPhotos'] else body['photoQuality']
     result=excel.store_download(owner,content,'tracking',data['dateFrom'],data['dateTo'],quality,body['period'])
     result['fallbackCount']=len(data['fallbackPhotos'])
+    result['hiddenColumns']=data['hiddenColumns']
     return result
