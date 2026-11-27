@@ -848,6 +848,15 @@ def _shift_target_sheet_structures(
         ws.print_area = ",".join(shifted_areas)
     for table in ws.tables.values():
         table.ref = str(_shift_cell_range(CellRange(table.ref), insert_row, amount, expand_adjacent=True))
+        if table.autoFilter is not None and table.autoFilter.ref:
+            table.autoFilter.ref = str(_shift_cell_range(CellRange(table.autoFilter.ref), insert_row, amount, expand_adjacent=True))
+        for sort in (table.sortState, table.autoFilter.sortState if table.autoFilter is not None else None):
+            if sort is not None:
+                if sort.ref:
+                    sort.ref = str(_shift_cell_range(CellRange(sort.ref), insert_row, amount, expand_adjacent=True))
+                for condition in sort.sortCondition:
+                    if condition.ref:
+                        condition.ref = str(_shift_cell_range(CellRange(condition.ref), insert_row, amount, expand_adjacent=True))
     for validation in ws.data_validations.dataValidation:
         validation.sqref = _shift_multi_range(validation.sqref, insert_row, amount)
 

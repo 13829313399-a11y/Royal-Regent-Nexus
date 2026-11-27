@@ -8,8 +8,11 @@ import { defineConfig } from 'vite'
 
 const root = fileURLToPath(new URL('.', import.meta.url))
 const repository = path.resolve(root, '../../..')
-export const aliases = [{ find: /^@\/lib\/http$/, replacement: path.join(root, 'src/api.ts') }, { find: '@', replacement: path.join(repository, 'src') }]
+export const aliases = [{ find: /^@\/lib\/http$/, replacement: path.join(root, 'src/api.ts') },
+  { find: /^@\/api\/shippingTasks$/, replacement: path.join(root, 'src/localShippingTasks.ts') },
+  { find: '@', replacement: path.join(repository, 'src') }]
 const reused = ['src/components/common/PageHeader.vue', 'src/components/common/SectionPanel.vue',
+  'src/features/route-motion/spatialAnchors.ts', 'src/features/route-motion/spatialGeometry.ts',
   'src/components/common/StatusPill.vue', 'src/components/ui/button/Button.vue',
   'src/components/ui/button/index.ts', 'src/lib/utils.ts', 'src/lib/customerOrderReconciliation.ts', 'src/style.css',
   'src/components/modules/sales/customer-order-center/CustomerOrderLedger.vue',
