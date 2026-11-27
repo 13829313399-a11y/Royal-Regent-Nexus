@@ -144,6 +144,72 @@ def test_different_file_same_fields_and_workbench_photo_reexport():
     assert all(row in journal.sync('huaxing', [])['items'] for row in original)
 
 
+def test_schedule_reimport_matches_annotated_and_preexisting_plain_workbooks(monkeypatch):
+    from base64 import b64encode
+    from contextlib import closing
+    from pydantic import SecretStr
+    from test_qc_photo_assets import EXPORT_MARKS, neutral_photo, assert_rendered_marks
+
+    monkeypatch.setattr(journal.settings, 'qc_department_gateway_token', SecretStr('isolated-schedule-test-key'))
+    intake.manual('huaxing', ACTOR, manual_entry())
+    original, = journal.sync('huaxing', [])['items']
+    eid = original['id']
+    for number, size in enumerate(((720, 640), (420, 300))):
+        original = journal.add_photo('huaxing', eid, dict(revision=original['revision'],
+            name=f'合成{number}.png', content=b64encode(neutral_photo(size=size)).decode(),
+            requestKey=uuid4().hex), ACTOR)
+
+    def schedule(entry):
+        return excel.export('huaxing', {'entries': [{'id': eid, 'revision': entry['revision']}]})
+
+    plain = schedule(original)
+    pid = original['photos'][0]['id']
+    marked = journal.save_photo_annotations('huaxing', eid, dict(photoId=original['photos'][0]['id'],
+        annotationVersion=0, annotations=EXPORT_MARKS), ACTOR)['entry']
+    annotated = schedule(marked)
+    _, rows = intake.parse(annotated)
+    unmarked_photos = [p[0] for p in intake.parse(plain)[1][0]['photos']]
+    assert any(photo[0] not in unmarked_photos for photo in rows[0]['photos'])
+    with ZipFile(BytesIO(annotated)) as book:
+        assert_rendered_marks(book.read('xl/media/image1.jpeg'))
+    assert intake.parse(annotated, factory='huaxing')[1][0]['verifiedPhotoSources']
+    assert 'verifiedPhotoSources' not in intake.parse(annotated, factory='huakang-a')[1][0]
+    for attachment in (plain, annotated):
+        preview = intake.workbook('huaxing', ACTOR, attachment)
+        assert (preview['count'], preview['existing']) == (0, 1)
+        assert preview['rows'][0]['duplicate']
+        assert intake.workbook('huaxing', ACTOR, attachment, preview['digest']) == {'count': 0, 'existing': 1}
+    assert journal.sync('huaxing', [])['items'] == [marked]
+
+    # A mixed workbook still skips the existing row if marks change after preview.
+    mixed = BytesIO()
+    with closing(load_workbook(BytesIO(annotated))) as book:
+        cells = [cell.value for cell in book.active[7]]
+        cells[4] = 'NEW-SKU'
+        book.active.append(cells)
+        book.save(mixed)
+    preview = intake.workbook('huaxing', ACTOR, mixed.getvalue())
+    assert [row['duplicate'] for row in preview['rows']] == [True, False]
+    journal.save_photo_annotations('huaxing', eid, dict(photoId=pid, annotationVersion=1,
+        annotations=[]), ACTOR)
+    assert intake.workbook('huaxing', ACTOR, mixed.getvalue(), preview['digest']) == {'count': 1, 'existing': 1}
+    assert confirm(annotated) == {'count': 0, 'existing': 1}
+    assert len(journal.sync('huaxing', [])['items']) == 2
+
+    # Replacing a JPEG or tampering with the proof does not match the existing record.
+    changed, forged = BytesIO(), BytesIO()
+    with ZipFile(BytesIO(annotated)) as original_book, ZipFile(changed, 'w') as modified:
+        for name in original_book.namelist():
+            image = neutral_photo('JPEG', size=(510, 300)) if name == 'xl/media/image1.jpeg' else original_book.read(name)
+            modified.writestr(name, image)
+    with closing(load_workbook(BytesIO(annotated))) as book:
+        prop, = book.custom_doc_props
+        prop.value = prop.value[:-64] + '0' * 64
+        book.save(forged)
+    for attachment in (changed, forged):
+        assert intake.workbook('huaxing', ACTOR, attachment.getvalue())['count'] == 1
+
+
 def test_mixed_batch_first_row_skipped_and_retry_preserves_existing():
     raw = exported_rows()
     confirm(raw)

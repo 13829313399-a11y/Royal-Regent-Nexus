@@ -182,3 +182,53 @@ def test_workbench_excel_uses_desk_fields_dates_and_embedded_photos():
     assert len(sheet._images) == 2
     assert all((im.anchor._from.col, im.anchor._from.row, im.anchor.to.row) == (16, 6, 6)
                for im in sheet._images)
+
+
+def test_saved_marks_render_in_schedule_photos_and_keep_unmarked_jpeg(monkeypatch, tmp_path):
+    from base64 import b64encode
+    from io import BytesIO
+    from zipfile import ZipFile
+    from PIL import Image, ImageOps
+    from app.services.qc_inspection_schedule_excel import export
+    from test_qc_photo_assets import EXPORT_MARKS, neutral_photo, assert_rendered_marks
+
+    monkeypatch.setattr(journal.settings, 'qc_department_data_dir', str(tmp_path))
+    eid = 'a' * 32
+    actor = {'id': 'test', 'name': '测试员'}
+    with journal.store(write=True) as conn:
+        conn.execute('INSERT INTO entries VALUES(?,?,?,?,?,?,0,0,?)',
+                     (eid, 'huaxing', 'desk:test:1', '{"dateFrom":"2026-11-16","customer":"示例"}',
+                      'PASS', '', ''))
+    encoded = b64encode(neutral_photo()).decode()
+    saved = journal.add_photo('huaxing', eid, dict(revision=0, name='合成.jpg', content=encoded,
+                              requestKey='1' * 32), actor)
+    photo_id = saved['photos'][0]['id']
+    plain = journal.read_photo('huaxing', eid, photo_id)
+    expected = BytesIO()
+    with Image.open(BytesIO(plain)) as original:
+        thumb = ImageOps.exif_transpose(original)
+        thumb.thumbnail((480, 480))
+        thumb.convert('RGB').save(expected, 'JPEG', quality=85)
+    for marks in (None, []):
+        assert printing.export_photo(plain, marks) == expected.getvalue()
+
+    marked = journal.save_photo_annotations('huaxing', eid, dict(photoId=photo_id,
+        annotationVersion=0, annotations=EXPORT_MARKS), actor)['entry']
+    identities = dict(entries=[dict(id=eid, revision=marked['revision'])])
+    photo, = printing.saved_records('huaxing', identities['entries'])[0]['photos']
+    assert_rendered_marks(photo)
+    attachment = export('huaxing', identities)
+    with ZipFile(BytesIO(attachment)) as book:
+        assert book.read('xl/media/image1.jpeg') == photo
+    from contextlib import closing
+    with closing(load_workbook(BytesIO(attachment))) as book:
+        assert book.active._images[0].anchor._from.col == 16
+
+    if printing.office_executable():
+        from base64 import b64decode
+        preview = printing.preview('huaxing', dict(template='客户验货排期表', **identities))
+        assert b64decode(preview['pdf']).startswith(b'%PDF-')
+        with Image.open(BytesIO(b64decode(preview['pages'][0]['image']))) as page:
+            # Calc downsamples the Q-column image and softens the narrow strokes.
+            assert sum(r > 150 and r > g + 65 and r > b + 65
+                       for r, g, b in page.get_flattened_data()) > 50

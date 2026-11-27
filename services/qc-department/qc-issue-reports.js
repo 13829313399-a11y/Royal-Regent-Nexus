@@ -2,6 +2,9 @@
 (function(root){
   'use strict';
   const doc=root.document,esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const photoSrc=(row,photo)=>row.revision!=null
+    ? 'api/report-workbook/photo?'+new URLSearchParams({entry:row.id,revision:row.revision,photo:photo.id})
+    : 'api/inspection-sheet/entries/'+encodeURIComponent(row.id)+'/photos/'+encodeURIComponent(photo.id);
   let dialog=null, closeCurrent=null, exportCurrent=null, isBusy=()=>false;
   async function open(period,date,initialCustomer='',options={}){
     if(!root.__QC_NEXUS?.factory)return;
@@ -54,7 +57,10 @@
       if(inline&&period==='yearly'&&root.QcReportWorkbook?.mount('yearly','annual-issues',q('[data-table]'),{rows,inspectionTotal:options.inspectionTotal},load))return;
       const {headers,widths,groups}=data;
       const band=groups.map(([count,label])=>'<th scope="colgroup" colspan="'+count+'"><span>'+esc(label)+'</span></th>').join('');
-      const photos=r=>'<div class="qir-photos qmt-photos">'+r.photos.map(p=>'<button class="qir-photo qmt-photo" data-src="api/inspection-sheet/entries/'+encodeURIComponent(r.id)+'/photos/'+encodeURIComponent(p.id)+'" aria-label="查看'+esc(p.name)+'"><img loading="lazy" src="api/inspection-sheet/entries/'+encodeURIComponent(r.id)+'/photos/'+encodeURIComponent(p.id)+'" alt="'+esc(p.name)+'"></button>').join('')+'</div>';
+      const photos=row=>'<div class="qir-photos qmt-photos">'+row.photos.map(photo=>{
+        const src=esc(photoSrc(row,photo)),name=esc(photo.name);
+        return `<button class="qir-photo qmt-photo" data-src="${src}" aria-label="查看${name}"><img loading="lazy" src="${src}" alt="${name}"></button>`;
+      }).join('')+'</div>';
       q('[data-table]').innerHTML='<table data-qmt-table="tracking" style="min-width:'+widths.reduce((a,b)=>a+b,0)+'px"><colgroup>'+widths.map(w=>'<col style="width:'+w+'px">').join('')+'</colgroup><thead><tr class="qmt-groups">'+band+'</tr><tr>'+headers.map(h=>'<th scope="col">'+esc(h)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+r.values.map((v,i)=>'<td>'+(i===12?photos(r):'<span>'+esc(v)+'</span>')+'</td>').join('')+'</tr>').join('')+'</tbody></table>';
       el.querySelectorAll('.qir-photo').forEach(button=>button.onclick=()=>{
         photoDialog?.remove();const modal=doc.createElement('dialog');photoDialog=modal;modal.className='qmt-photo-dialog';
