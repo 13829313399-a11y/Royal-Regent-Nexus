@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { newId } from './ids'
 import { computed, onMounted, ref, watch } from 'vue'
 import { Download, Plus, Trash2 } from '@lucide/vue'
 import { getApiErrorMessage } from '@/lib/http'
@@ -236,7 +237,7 @@ async function importCabinet(detail: LoadingSheetDetail) {
     ].filter(Boolean))]
     if (contracts.length) base.header.invoice = contracts.join(' / ')
     base.lines = detail.lines.map((line) => ({
-      id: crypto.randomUUID(),
+      id: newId(),
       mixNo: '',
       containerNo: detail.header.containerNo || '',
       sealNo: detail.header.sealNo || '',
@@ -280,7 +281,7 @@ function recalc(line: SupplementLine) {
 function addLine() {
   if (!draft.value) return
   draft.value.lines.push({
-    id: crypto.randomUUID(), mixNo: '', containerNo: '', sealNo: '', size: draft.value.lines[0]?.size ?? '',
+    id: newId(), mixNo: '', containerNo: '', sealNo: '', size: draft.value.lines[0]?.size ?? '',
     itemNo: '', description: '', salesConf: '', po: '', ctns: null, pallet: '', qty: null,
     booking: '', deliveryDate: '', cbmPerCarton: null, cbm: null, gwPerCarton: null, gw: null,
     pack: '', tare: null, vgm: null,

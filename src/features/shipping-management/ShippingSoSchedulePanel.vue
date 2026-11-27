@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { newId } from './ids'
 import { ref } from 'vue'
 import ShippingLoadingSheetPanel from './ShippingLoadingSheetPanel.vue'
 import ShippingGeneratedDocs from './ShippingGeneratedDocs.vue'
@@ -17,7 +18,7 @@ function text(value: unknown) {
 function toLine(line: Record<string, unknown>): LoadingLine {
   const productCode = text(line.filingCode) || text(line.declareCode)
   return {
-    id: crypto.randomUUID(),
+    id: newId(),
     tradingCompany: text(line.tradingCompany) || 'DK',
     contract: text(line.contract),
     filingCode: productCode,

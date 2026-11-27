@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { newId } from './ids'
 import { computed, onMounted, ref, watch } from 'vue'
 import { Download, Plus, Trash2 } from '@lucide/vue'
 import { getApiErrorMessage } from '@/lib/http'
@@ -60,7 +61,7 @@ async function loadDraft() {
 function addLine() {
   if (!draft.value) return
   draft.value.lines.push({
-    id: crypto.randomUUID(), department: '', tradingHouse: 'Buzzbee', contract: '', filingCode: '',
+    id: newId(), department: '', tradingHouse: 'Buzzbee', contract: '', filingCode: '',
     declareCode: '', name: '', country: draft.value.lines[0]?.country ?? '', category: '',
     quantity: null, coefficient: null, pieces: null, grossWeight: null, netWeight: null, cbm: null,
     cartonMark: '', totalCartons: '', grossPerCarton: null, netPerCarton: null, remark: '',
@@ -93,7 +94,7 @@ async function runSearch() {
       if (!code) continue
       const cartons = Number(item.cartons) || 0
       const mapped: TruckLine = {
-        id: crypto.randomUUID(),
+        id: newId(),
         department: 'DK',
         tradingHouse: 'Buzzbee',
         contract: String(item.contract_no || ''),

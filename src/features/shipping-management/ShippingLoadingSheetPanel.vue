@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { newId } from './ids'
 import { computed, onMounted, ref, watch } from 'vue'
 import { Download, Plus, Trash2 } from '@lucide/vue'
 import { getApiErrorMessage } from '@/lib/http'
@@ -182,7 +183,7 @@ function lineFromSchedule(item: Record<string, unknown>): LoadingLine {
   const quantity = Number(item.quantity) || null
   const cartons = Number(item.cartons) || null
   return {
-    id: crypto.randomUUID(),
+    id: newId(),
     tradingCompany: 'DK',
     contract: String(item.contract_no || ''),
     filingCode: String(item.product_code || ''),
@@ -292,7 +293,7 @@ async function loadDraft() {
 function addLine() {
   if (!draft.value) return
   draft.value.lines.push({
-    id: crypto.randomUUID(), tradingCompany: 'DK',
+    id: newId(), tradingCompany: 'DK',
     contract: draft.value.header.contractNo?.trim() || draft.value.lines[0]?.contract || '',
     filingCode: '', declareCode: '', coefficient: null, quantity: null, cartons: null, grossWeight: null, netWeight: null,
     cbm: null, category: '塑胶', grossPerCarton: null, netPerCarton: null, description: '', department: 'W', pallet: null,
@@ -635,19 +636,19 @@ function mergeScheduleLines(imported: LoadingLine[], scheduled: LoadingLine[], c
   for (const line of imported) {
     const matches = byCode.get(lineCode(line)) ?? []
     if (!matches.length) {
-      merged.push({ ...line, id: crypto.randomUUID(), contract: contract || line.contract })
+      merged.push({ ...line, id: newId(), contract: contract || line.contract })
       continue
     }
     for (const match of matches) {
       const key = `${match.contract}|${lineCode(match)}`
       if (emitted.has(key)) continue
       emitted.add(key)
-      merged.push({ ...match, id: crypto.randomUUID(), contract: match.contract || contract })
+      merged.push({ ...match, id: newId(), contract: match.contract || contract })
     }
   }
   if (!merged.length) {
     for (const line of scheduled) {
-      merged.push({ ...line, id: crypto.randomUUID(), contract: line.contract || contract })
+      merged.push({ ...line, id: newId(), contract: line.contract || contract })
     }
   }
   return merged
