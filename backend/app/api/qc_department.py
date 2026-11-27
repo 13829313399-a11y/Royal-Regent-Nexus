@@ -487,7 +487,7 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         if asset_path in {"api/records/delete", "api/records/replace", "api/reference-data/clear"} or payload.get("deletedIds"):
             payload["_qc"]["protectedIds"] = await run_in_threadpool(qc_inspection_sheet.submitted_legacy_ids, factory_id)
         body = json.dumps(payload).encode()
-    params = [(k, v) for k, v in request.query_params.multi_items() if k != "company"]
+    params = [(k, v) for k, v in request.query_params.multi_items() if k not in {"company", "sheetVersions"}]
     params.append(("company", company))
     export_records = qc_workflow.ledger_records(db, factory_id) if asset_path.startswith('api/export/') else []
     plan_export = asset_path.startswith('api/export/') and request.query_params.get('dateBasis') == 'inspection-plan'
@@ -505,6 +505,9 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
         payload = result.json()
         # An older private service may still return its legacy account data.
         payload.pop("users", None)
+        payload.pop("recordVersions", None)
+        payload.pop("recordGenerations", None)
+        payload.pop("recordGenerationStarts", None)
         payload["testEntryIds"] = [r["id"] for r in payload.get("records", []) if qc_workflow.test_entry_allowed(factory_id, r)]
         payload["inspectionPlans"] = inspection_plan_dates(factory_id, payload.get("records", []), payload["testEntryIds"])
         return JSONResponse(payload, headers=NO_CACHE)
@@ -628,21 +631,45 @@ async def monthly_templates_request(path, request, db, user, factory_id):
     return JSONResponse(result, headers=NO_CACHE)
 
 
+async def archive_deleted_legacy_records(factory_id, entry_ids=None):
+    pending = await run_in_threadpool(qc_inspection_sheet.pending_legacy_deletes, factory_id, entry_ids)
+    if not pending:
+        return
+    items = [{'id': row['legacy_id'], 'version': row['version'], 'actor': row['actor']} for row in pending]
+    try:
+        response = await upstream('POST', 'api/records/archive-sheet', [('company', COMPANIES[factory_id])],
+                                  json.dumps({'items': items}).encode())
+        if not response.is_success:
+            return
+        results = response.json().get('results')
+    except (HTTPException, ValueError, AttributeError):
+        return
+    if not isinstance(results, list) or len(results) != len(pending) or any(
+            status not in ('archived', 'retained', 'absent') for status in results):
+        return
+    await run_in_threadpool(qc_inspection_sheet.acknowledge_legacy_deletes, factory_id,
+                            [(row['entry_id'], status) for row, status in zip(pending, results)])
+
+
 async def inspection_sheet_request(path, request, db, user, factory_id):
     service = qc_inspection_sheet
     parts = path.split('/')
     actor = {'id': user.id, 'name': user.display_name or user.username}
     notification_actions = {'review/notifications': 'revoke', 'entries/notifications': 'return-to-inspection'}
     async def current_entries(copy_photos=True, view="workbench"):
-        response=await upstream('GET','api/bootstrap',[('company',COMPANIES[factory_id])],b'')
+        # Complete previously authorized deletes even if the initiating dialog was closed.
+        await archive_deleted_legacy_records(factory_id)
+        response=await upstream('GET','api/bootstrap',[('company',COMPANIES[factory_id]),('sheetVersions','1')],b'')
         if response.status_code!=200:raise HTTPException(503,'验货基础数据读取失败，请重试')
         data=response.json()
         examples=schedule_example(factory_id, missing_ok=True)['items'] if factory_id=='huaxing' else []
         source_rows=qc_workflow.sources(db,factory_id)['items']
         tasks=qc_workflow.list_tasks(db,factory_id)['items']
+        generations = data.get('recordGenerations')
+        generation_starts = data.get('recordGenerationStarts')
         rows=service.candidates(factory_id,data.get('records',[]),tasks,
-            source_rows,examples,data.get('referenceData',{}).get('ids',[]))
-        result=await run_in_threadpool(service.sync,factory_id,rows,copy_photos)
+            source_rows,examples,data.get('referenceData',{}).get('ids',[]),data.get('recordVersions'),generations,generation_starts)
+        result=await run_in_threadpool(service.sync,factory_id,rows,copy_photos,generations,generation_starts)
         cancelled={r['id'] for r in source_rows if r.get('sourceStatus')=='cancelled'}
         all_items=result['items']
         task_methods={task['id']:task['method'] for task in tasks if task.get('methodConfirmed') is not False}
@@ -690,8 +717,9 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
     if path in {'intake/preview', 'intake/import', 'intake/manual'}:
         return await inspection_intake_request(path, request, db, user, factory_id, actor)
     exporting = path in {'print-preview', 'schedule-excel'}
-    deleting = path in {'entries/delete', 'review/delete'}
-    if deleting:
+    delete_scope = {'entries/delete': 'workbench', 'review/delete': 'pending',
+                    'review/approved/delete': 'approved'}.get(path)
+    if delete_scope:
         _ensure_permission(db, user, 'qc_inspection:record_delete', factory_id)
     else:
         _ensure_permission(db, user, 'qc_inspection:report_export' if exporting else 'qc_inspection:result_write', factory_id)
@@ -721,22 +749,15 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
         result = await run_in_threadpool(service.mark_review_read, factory_id, user.id, body)
     elif path in {'review/confirm','review/revoke'}:
         result=await run_in_threadpool(service.review_batch,factory_id,parts[1],body,actor)
-    elif path in {'entries/delete','review/delete'}:
-        scope = 'workbench' if path == 'entries/delete' else 'pending'
-        result = await run_in_threadpool(service.delete_batch, factory_id, scope, body, actor)
-        legacy_ids = []
-        for item in result['results']:
-            if not item.get('ok'):
-                continue
-            if isinstance(item.get('legacyId'), int):
-                legacy_ids.append(item['legacyId'])
-        if legacy_ids:
-            cleanup = await upstream(
-                'POST', 'api/records/delete', [('company', COMPANIES[factory_id])],
-                json.dumps({'ids': legacy_ids, '_qc': {'actor': user.id, 'sheetReceipt': True}}).encode(),
-            )
-            if not cleanup.is_success:
-                raise HTTPException(503, '历史库归档尚未确认，请重试同一删除请求')
+    elif delete_scope:
+        result = await run_in_threadpool(service.delete_batch, factory_id, delete_scope, body, actor)
+        pending = [item for item in result['results'] if item.get('legacyArchive') == 'pending']
+        if pending:
+            entry_ids = [item['id'] for item in pending]
+            await archive_deleted_legacy_records(factory_id, entry_ids)
+            statuses = await run_in_threadpool(service.legacy_delete_statuses, factory_id, entry_ids)
+            for item in pending:
+                item['legacyArchive'] = statuses[item['id']]
     elif (len(parts)==3 and parts[0]=='entries' or len(parts)==4 and parts[:2]==['review','entries']) and parts[-1]=='photo-annotations':
         result=await run_in_threadpool(service.save_photo_annotations,factory_id,parts[-2],body,actor,review=len(parts)==4)
     elif len(parts)==4 and parts[:2]==['review','entries'] and parts[3] in {'save','photos','remove-photo'}:
@@ -867,14 +888,15 @@ async def workflow_request(path, request, db, user, factory_id):
     elif path == "manual":
         result = qc_workflow.create_entry(factory_id, body, actor)
     elif path == "legacy":
-        response = await upstream("GET", "api/bootstrap", [("company", COMPANIES[factory_id])], b"")
+        response = await upstream("GET", "api/bootstrap", [("company", COMPANIES[factory_id]), ("sheetVersions", "1")], b"")
         if response.status_code != 200:
             raise HTTPException(503, "历史记录读取失败，请重试")
         data = response.json()
         record = next((r for r in data.get("records", []) if type(body.get("recordId")) is int and r["id"] == body["recordId"]), None)
         if record is None: raise HTTPException(404, "历史记录不存在")
-        result = qc_workflow.create_entry(factory_id, body, actor, record,
-            record['id'] in data.get('referenceData', {}).get('ids', []))
+        result = await run_in_threadpool(qc_inspection_sheet.link_legacy_record, factory_id, body, actor, record,
+            record['id'] in data.get('referenceData', {}).get('ids', []),
+            data.get('recordGenerations'), data.get('recordGenerationStarts'))
     elif path == "export-prepare":
         result = qc_workflow.prepare_export(db, factory_id, body, user.id)
     elif path == "export":

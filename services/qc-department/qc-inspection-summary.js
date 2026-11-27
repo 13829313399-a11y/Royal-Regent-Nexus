@@ -706,7 +706,7 @@
       const adminZone=canDelete()
         ?(row.sourceKind==='history'
           ?'<div class="qsum-admin-zone qsum-admin-danger"><div class="qsum-admin-info"><strong>数据管理（历史工作簿导入）</strong><span>'+(row.sourceFilename?'来源文件：'+esc(row.sourceFilename):'仅删除此历史导入记录，保留后台变更留痕')+'</span></div><div class="qsum-admin-actions">'+(row.historyBatchId?'<button type="button" class="btn btn-secondary" data-rollback-same-batch>撤回同批次记录</button>':'')+'<button type="button" class="btn qsum-danger-outline" data-delete-history-record>删除这条历史汇总</button></div></div>'
-          :'<div class="qsum-admin-zone qsum-admin-guard"><div class="qsum-admin-info"><strong>一致性保护</strong><span>此记录由审核中心同步入账，为保障汇总与报表口径一致，不提供直接删除。</span></div><div class="qsum-admin-actions"><button type="button" class="btn btn-secondary" data-goto-review-approved>前往审核中心反审核后再删除 →</button></div></div>')
+          :'<div class="qsum-admin-zone qsum-admin-guard"><div class="qsum-admin-info"><strong>删除审核入账记录</strong><span>请在「审核中心 → 已审核」选择要删除的记录。删除后会同步撤出验货汇总和报表。</span></div><div class="qsum-admin-actions"><button type="button" class="btn btn-secondary" data-goto-review-approved>前往已审核 →</button></div></div>')
         :'';
       body.innerHTML='<div class="qrd-toolbar">'+identity+
         '<div class="qsum-dossier-tabs" role="tablist" aria-label="验货资料分类">'+tabs+'</div></div>'+
