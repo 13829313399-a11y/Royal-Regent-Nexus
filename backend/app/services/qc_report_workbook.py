@@ -181,11 +181,10 @@ def writable_cells(kind, data):
         bind(0, data['tables']['footer'], len(rows)+7, qc_weekly_excel.FOOTER_COLUMNS,
              fields={3:'returns', 5:'returnReason', 6:'hongKongContact', 7:'reworkA0D', 8:'weeklyRemark'})
     elif kind == 'quality':
-        from app.services.qc_monthly_overview_excel import re_number
+        from app.services.qc_report_empty_cols import formula_boxes
 
         def computed_boxes(row, column):
-            qty, pack, boxes = row['values'][6:9]
-            return column == 8 and boxes == '' and re_number(qty) and re_number(pack) and float(pack) > 0
+            return column == 8 and formula_boxes(row['values'])
 
         overview = data['overview']
         bind(1, rows, 7, computed=computed_boxes)

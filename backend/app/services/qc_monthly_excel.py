@@ -389,7 +389,10 @@ def checked_data(factory, body):
 
 
 def prepare(factory, owner, body):
+    from app.services.qc_report_empty_cols import split_option
+    body, enabled = split_option(body)
     data=checked_data(factory,body)
+    data.update(hideEmptyCols=enabled, hiddenColumns=[])
     kind=body['template']
     content = render(data, kind, factory)
     fresh = monthly.query(factory, body['date'], body['customer'],kind=='overview',kind if kind in monthly.design.NAMES else None)
@@ -397,7 +400,8 @@ def prepare(factory, owner, body):
         raise HTTPException(409, '导出期间记录已变化，请刷新后重试')
     photo_quality='preview' if kind in {'issues','tracking'} and any(row['photos'] for row in data['tables'][kind]) else None
     download_name = filename(kind,data['dateFrom'],data['dateTo'],photo_quality)
-    return store_download(owner,content,kind,data['dateFrom'],data['dateTo'],photo_quality)
+    return {**store_download(owner,content,kind,data['dateFrom'],data['dateTo'],photo_quality),
+            'hiddenColumns': data['hiddenColumns']}
 
 
 def store_download(owner,content,kind,start,end,quality=None,period='monthly'):

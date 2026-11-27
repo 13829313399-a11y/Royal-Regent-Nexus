@@ -69,6 +69,7 @@
     if(root.__QC_NEXUS.exportAllowed){
       summary.insertAdjacentHTML('beforeend','<div class="report-export-footer"><span role="status" id="qstats-export-status"></span><button type="button" id="qstats-export">导出 Excel</button></div>');
       el('export').onclick=exportSummary;
+      root.QcExportColumns.mount(el('export'),'annual-stats');
     }
     const tabs=[el('summary-tab'),el('tracking-tab')];
     const select=tab=>{
@@ -128,7 +129,7 @@
       link.href=url;link.download=factoryName()+year+'年验货统计表.xlsx';
       root.document.body.append(link);link.click();link.remove();
       root.setTimeout(()=>root.URL.revokeObjectURL(url),30000);
-      status.textContent='已发起下载';
+      status.textContent=root.QcExportColumns.message(false);
     }catch(error){if(state.data===data)status.textContent=error.message;}
     finally{if(state.data===data)button.disabled=false;}
   }

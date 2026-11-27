@@ -17,12 +17,13 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db import get_db
 from app.models.auth import AuthUser
-from app.services.auth import AuthContext, can, get_current_user
+from app.services.auth import AuthContext, can, get_current_user, has_permission_in_scope
 from app.api.qc_inspection import _ensure_permission
 from app.services import qc_workflow, qc_inspection_sheet, qc_inspection_summary, qc_approved_statistics, qc_daily_report, qc_weekly_templates
 from starlette.concurrency import run_in_threadpool
 from app.services import qc_weekly_excel, qc_monthly_templates, qc_monthly_excel
 from app.services.qc_approved_statistics import factory_label
+from app.services import qc_report_empty_cols as empty_cols
 from urllib.parse import quote
 
 router = APIRouter(prefix="/api/qc-department", tags=["qc-department"])
@@ -42,8 +43,8 @@ STATIC_FILES = {
     *EMPTY_ART_FILES,
     "qc-select.js", "qc-select.css",
     "qc-empty-state.js", "qc-empty-state.css", "qc-empty-motion.js",
-    "qc-mobile-entry.js", "qc-mobile-entry.css", "qc-photo-shapes.js",
-    "qc-report-workbook.js", "qc-report-workbook.css", "qc-review-workbook.js",
+    "qc-mobile-entry.js", "qc-mobile-entry.css", "qc-photo-shapes.js", "qc-glass-guide.js", "qc-glass-guide.css",
+    "qc-export-columns.js", "qc-report-workbook.js", "qc-report-workbook.css", "qc-review-workbook.js",
     "qc-daily-report.js", "qc-daily-report.css",
     "qc-weekly-templates.js", "qc-weekly-templates.css",
     "qc-monthly-templates.js", "qc-monthly-templates.css", "qc-issue-reports.js", "qc-issue-reports.css",
@@ -141,7 +142,9 @@ def ui_context(user: AuthContext, factory_id: str) -> dict:
             "weeklyTemplatesEditAllowed": allowed("result_write"),
             "deleteAllowed": record_delete,
             "workflow": {"create": allowed("schedule_write") and allowed("order_write"), "edit": allowed("result_write"),
-                         "review": allowed("review"), "export": export, "manual": write, "delete": record_delete},
+                         "review": allowed("review"),
+                         "reviewReads": has_permission_in_scope(user, "qc_inspection:result_write", factory_id, "qc"),
+                         "export": export, "manual": write, "delete": record_delete},
             "inspector": {"id": user.id, "name": user.display_name or user.username},
             "user": {"username": "nexus:" + user.id, "name": user.display_name or user.username,
                      "role": "viewer", "enabled": True, "perms": perms}}
@@ -269,6 +272,10 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
     if asset_path in {"api/daily-report", "api/daily-report/export"} and request.method == "GET":
         exporting = asset_path.endswith("/export")
         keys = {"date", "revision"} if exporting else {"date"}
+        if exporting and "hideEmptyCols" in request.query_params:
+            keys.add("hideEmptyCols")
+            if request.query_params["hideEmptyCols"] not in {"0", "1"}:
+                raise HTTPException(422, "hideEmptyCols 仅接受 0 或 1")
         if "customer" in request.query_params:
             keys.add("customer")
         if "period" in request.query_params:
@@ -282,10 +289,12 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
             return JSONResponse(report, headers=NO_CACHE)
         if request.query_params["revision"] != report["revision"] or not report["total"]:
             raise HTTPException(409, "日报记录已变化或为空，请重新读取后导出")
-        content = await run_in_threadpool(qc_daily_report.workbook, report)
+        columns = empty_cols.hidden('daily', report['rows']) if request.query_params.get("hideEmptyCols") == "1" else []
+        content = await run_in_threadpool(qc_daily_report.workbook, report, columns)
         label = {"daily": "每日", "weekly": "每周", "monthly": "每月"}[report["period"]]
         name = quote(f"{label}验货情况统计表_{report['dateFrom']}_{report['dateTo']}.xlsx", safe="")
         return Response(content, media_type=qc_inspection_sheet.MIME, headers={**NO_CACHE,
+            "X-QC-Hidden-Columns": quote(json.dumps([report['headers'][i-1] for i in columns], ensure_ascii=False), safe=''),
             "Content-Disposition": "attachment; filename=QC-daily.xlsx; filename*=UTF-8''" + name})
     if asset_path in {"api/issue-reports", "api/issue-reports/excel"}:
         return await issue_reports_request(asset_path, request, db, user, factory_id)
@@ -298,6 +307,9 @@ async def gateway(factory_id: str, asset_path: str, request: Request,
             raise HTTPException(405, "年报只支持下载")
         _ensure_permission(db, user, "qc_inspection:report_export", factory_id)
         args = dict(request.query_params)
+        if "hideEmptyCols" in args:
+            if len(request.query_params.getlist("hideEmptyCols")) != 1 or args.pop("hideEmptyCols") not in ("0", "1"):
+                raise HTTPException(422, "hideEmptyCols 仅接受 0 或 1")
         if (set(args) != {"year", "customer", "result", "revision"} or not args["year"]
                 or any(len(request.query_params.getlist(k)) != 1 for k in args)):
             raise HTTPException(422, "年报导出参数不正确")
@@ -638,6 +650,13 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
         for item in all_items:item['sourceCancelled']=item.get('sourceId') in cancelled or (item.get('sourceRecord') or {}).get('sourceStatus')=='cancelled'
         if view=='review':
             result['items']=[r for r in all_items if r.get('reviewState') in {'pending','approved'} or r.get('legacyCompleted')]
+            # The inspection sheet supports self-review under result_write.
+            # The separate supervisor workflow keeps its own review permission.
+            if has_permission_in_scope(user, 'qc_inspection:result_write', factory_id, 'qc'):
+                reads = await run_in_threadpool(service.review_read_versions, factory_id, user.id)
+                for item in result['items']:
+                    if item.get('reviewState') == 'pending':
+                        item['reviewRead'] = reads.get(item['id']) == item['revision']
         else:
             result['items']=service.workbench_items(all_items)
         return result
@@ -698,6 +717,8 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
     notification_action = notification_actions.get(path.removesuffix('/shown')) if path.endswith('/shown') else None
     if notification_action:
         result = await run_in_threadpool(service.review_notifications, factory_id, actor, body, action=notification_action)
+    elif path == 'review/mark-read':
+        result = await run_in_threadpool(service.mark_review_read, factory_id, user.id, body)
     elif path in {'review/confirm','review/revoke'}:
         result=await run_in_threadpool(service.review_batch,factory_id,parts[1],body,actor)
     elif path in {'entries/delete','review/delete'}:
@@ -727,7 +748,7 @@ async def inspection_sheet_request(path, request, db, user, factory_id):
     elif len(parts)==3 and parts[0]=='entries' and parts[2] in {'save','photos','remove-photo','submit'}:
         method={'save':service.save,'photos':service.add_photo,'remove-photo':service.remove_photo,'submit':service.submit}[parts[2]]
         if parts[2]=='photos':
-            result=await run_in_threadpool(method,factory_id,parts[1],body,actor)
+            result=await run_in_threadpool(method,factory_id,parts[1],body,actor,include_upload_id=True)
         else:
             result=method(factory_id,parts[1],body,actor)
     else:raise HTTPException(404,'接口不存在')

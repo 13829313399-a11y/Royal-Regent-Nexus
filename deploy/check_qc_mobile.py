@@ -14,6 +14,8 @@ ASSETS = {
     "app/app.js": ({"text/javascript", "application/javascript"}, "function renderMobileTask"),
     "app/remote.js": ({"text/javascript", "application/javascript"}, "window.QcMobileRemote"),
     "app/qc-photo-shapes.js": ({"text/javascript", "application/javascript"}, "QcPhotoShapes"),
+    "app/qc-glass-guide.js": ({"text/javascript", "application/javascript"}, "QcGlassGuide"),
+    "app/qc-glass-guide.css": ({"text/css"}, ".qc-glass-guide"),
     "app/icon.svg": ({"image/svg+xml"}, "<svg"),
 }
 

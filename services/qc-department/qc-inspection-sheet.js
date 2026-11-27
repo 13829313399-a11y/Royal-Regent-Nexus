@@ -4,11 +4,13 @@
   if(!root.__QC_NEXUS)return;
   const model={items:[],results:['PASS','FAIL','PENDING','LG'],columns:[],drafts:new Map(),loaded:false,loading:false,error:'',selectedId:'',view:'records',recordsSort:'date-asc',reviewTab:'pending',checked:new Set(),reviewBusy:false,recordChecked:new Set(),deleteChecked:new Set(),deleteBusy:false,recordFilterKey:'',submitBusy:false,reviewFilters:{search:'',result:'',from:'',to:''}};
   let notificationGeneration=0,recordsRefreshInFlight=false,localUpdate=0;
+  let reviewGuide, reviewGuideShown=false;
   const sameData=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const byId=id=>model.items.find(r=>r.id===id);
   const editable=()=>Boolean(root.__QC_NEXUS.workflow?.edit);
   const canDelete=()=>Boolean(root.__QC_NEXUS.workflow?.delete);
+  const trackReads=()=>Boolean(root.__QC_NEXUS.workflow?.reviewReads);
   const base='api/inspection-sheet/';
   const photoAccept='image/jpeg,image/png,image/webp,image/heic,image/heif,image/avif,image/tiff,image/bmp,image/gif,.mpo,.heic,.heif,.tif,.tiff';
   // LAN HTTP pages lack randomUUID; getRandomValues remains available there.
@@ -122,7 +124,14 @@
     const index=model.items.findIndex(r=>r.id===id);
     if(index>=0&&model.items[index].revision>saved.revision)return;
     if(index>=0&&model.items[index].photoWarning&&!('photoWarning' in saved))saved={...saved,photoWarning:model.items[index].photoWarning};
-    if(index>=0){saved={...saved,sourceCancelled:saved.sourceCancelled??model.items[index].sourceCancelled,inspectionMethod:saved.inspectionMethod??model.items[index].inspectionMethod};model.items[index]=saved;localUpdate++;}
+    if(index>=0){
+      const previous=model.items[index];
+      saved={...saved,sourceCancelled:saved.sourceCancelled??previous.sourceCancelled,inspectionMethod:saved.inspectionMethod??previous.inspectionMethod};
+      if(saved.reviewState==='pending'&&saved.reviewRead===undefined&&trackReads()){
+        saved.reviewRead=previous.revision===saved.revision&&previous.reviewRead===true;
+      }
+      model.items[index]=saved;localUpdate++;
+    }
     const entryNode=root.document.querySelector('[data-entry="'+id+'"]');if(entryNode&&model.view==='review'){
       const hint=audit().hint(saved);entryNode.querySelectorAll('[data-audit]').forEach(button=>{button.title=hint;button.setAttribute('aria-label',hint+'；查看修改历史');});
       for(const key of ['customer','poNo']){const cell=entryNode.querySelector('[data-column="'+key+'"]');if(cell)cell.title=(saved[key]||'')+'\n'+hint;}
@@ -134,7 +143,7 @@
     const row=byId(id);if(!row)return;
     const d=draft(row);clearTimeout(d.timer);d.timer=null;
     if(d.busy||d.error)return;
-    d.busy=true;status(id);let photoJob=null;
+    d.busy=true;status(id);let photoJob=null, photoToOpen;
     try{
       while((d.dirty||d.queue.length)){
         const current=byId(id);
@@ -150,6 +159,7 @@
           try{
             const saved=await api(entryPath(id)+'/'+job.action,{revision:current.revision,...job.body});
             accept(id,saved);d.queue.shift();
+            if(job.preview&&(job.camera||current.photos.length===0)&&saved.uploadedPhotoId)photoToOpen=saved.uploadedPhotoId;
           }catch(error){
             const latest=byId(id);
             // A mapped text save can commit while this photo request is in flight.
@@ -163,7 +173,15 @@
       d.errorKind=photoJob?'photo':'text';
       d.error=(d.rejectedPhoto?photoJob.body.name+'：':'')+error.message;d.conflict=error.status===409;
     }
-    finally{d.busy=false;d.busyKind=null;status(id);}
+    finally{
+      d.busy=false;d.busyKind=null;status(id);
+      if(photoToOpen&&!d.error&&model.view==='records'&&root.document.getElementById('page-records')?.classList.contains('active')&&
+          !root.document.querySelector('dialog[open]')){
+        const link=[...root.document.querySelectorAll('[data-photo-list="'+id+'"] [data-view-photo]')]
+          .find(node=>node.dataset.viewPhoto===photoToOpen);
+        if(link)void openEntryPhoto(byId(id),link,{automatic:true});
+      }
+    }
   }
   function edit(id,key,value,immediate=false){
     if(model.submitBusy||model.reviewBusy||model.deleteBusy)return;const d=draft(byId(id));if(d[key]===value)return;d[key]=value;d.dirty=true;clearTimeout(d.timer);status(id);
@@ -211,14 +229,19 @@
     if(model.loading){model.nextLoad={view,tab};return;}
     if(navigationState().dirty||navigationState().busy){root.showToast?.('请先完成本行保存或重试；未保存内容仍保留。','error');return;}
     typingStep=null;fieldHistory.undo.length=0;fieldHistory.redo.length=0;
-    if(model.view!==view){root.document.getElementById(model.view==='records'?'recordsTableWrap':'reviewTableWrap')?.replaceChildren();model.items=[];model.drafts.clear();model.checked.clear();}
+    if(model.view!==view){
+      root.document.getElementById(model.view==='records'?'recordsTableWrap':'reviewTableWrap')?.replaceChildren();
+      model.items=[];model.drafts.clear();model.checked.clear();
+      if(view!=='review')clearReviewGuide();
+    }
     model.recordChecked.clear();
     model.deleteChecked.clear();
     if(model.reviewTab!==tab){
       model.checked.clear();
       reviewDates?.setRange(model.reviewFilters.from,model.reviewFilters.to);
     }
-    model.view=view;model.reviewTab=tab==='approved'?'approved':'pending';if(view==='review')reviewControls();
+    model.view=view;model.reviewTab=tab==='approved'?'approved':'pending';
+    if(view==='review'){reviewControls();}
     const noticeGeneration=++notificationGeneration;audit().dismissNotices();model.loading=true;model.error='';render();
     try{
       const [nextOptions,data]=await Promise.all([api('options'),api(view==='review'?'review/entries':'entries')]);
@@ -558,37 +581,44 @@
   }
   const scalar=value=>value==null?'':String(value);
   function bindPhotos(node,row){
-    node.querySelectorAll('[data-view-photo]').forEach(link=>link.onclick=async event=>{
-      const viewer=root.QcInspectionSummary?.openPhoto;
-      if(!viewer||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
+    node.querySelectorAll('[data-view-photo]').forEach(link=>link.onclick=event=>{
+      if(!root.QcInspectionSummary?.openPhoto||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
       event.preventDefault();
-      try{
-        const {items}=await api('entries/'+encodeURIComponent(row.id)+'/photo-info');
-        if(!link.isConnected)return;
-        const index=items.findIndex(photo=>photo.id===link.dataset.viewPhoto);
-        if(index<0)throw Error('照片已移除，请刷新记录');
-        const view=model.view,annotationPath=entryPath(row.id)+'/photo-annotations';
-        const saveAnnotations=canEdit(row)?async body=>{
-          const current=byId(row.id);
-          if(!current||!canEdit(current)||model.view!==view||model.loading||model.submitBusy||model.reviewBusy)throw Error('当前记录不能编辑，请核对审核状态');
-          const d=draft(current);
-          if(d.busy||d.reading||d.dirty||d.queue.length||d.error)await flushRow(row.id);
-          const latest=byId(row.id);
-          if(!latest||!canEdit(latest)||model.view!==view||model.loading||model.submitBusy||model.reviewBusy||d.submitting)throw Error('当前记录不能编辑，请核对审核状态');
-          d.busy=true;
-          try{
-            const saved=await api(annotationPath,body);
-            accept(row.id,saved.entry,false);
-            return saved.photo;
-          }finally{d.busy=false;status(row.id);}
-        }:null;
-        viewer({entryId:row.id},items,index,null,link,saveAnnotations);
-      }catch(error){root.showToast?.('打开照片失败：'+error.message,'error');}
+      return openEntryPhoto(row,link);
     });
     node.querySelectorAll('[data-remove-photo]').forEach(button=>button.onclick=()=>{
       if(!root.confirm('删除这张误传照片？'))return;button.disabled=true;
       const d=draft(row);d.queue.push({action:'remove-photo',body:{photoId:button.dataset.removePhoto}});pump(row.id);status(row.id);
     });
+  }
+  async function openEntryPhoto(row,link,{automatic=false}={}){
+    const viewer=root.QcInspectionSummary?.openPhoto;
+    if(!viewer||!row)return;
+    const view=model.view;
+    try{
+      const {items}=await api('entries/'+encodeURIComponent(row.id)+'/photo-info');
+      if(!link.isConnected||model.view!==view)return;
+      if(automatic&&(!root.document.getElementById('page-records')?.classList.contains('active')
+          ||root.document.querySelector('dialog[open]')))return;
+      const index=items.findIndex(photo=>photo.id===link.dataset.viewPhoto);
+      if(index<0)throw Error('照片已移除，请刷新记录');
+      const annotationPath=entryPath(row.id)+'/photo-annotations';
+      const saveAnnotations=canEdit(byId(row.id)??row)?async body=>{
+        const current=byId(row.id);
+        if(!current||!canEdit(current)||model.view!==view||model.loading||model.submitBusy||model.reviewBusy)throw Error('当前记录不能编辑，请核对审核状态');
+        const d=draft(current);
+        if(d.busy||d.reading||d.dirty||d.queue.length||d.error)await flushRow(row.id);
+        const latest=byId(row.id);
+        if(!latest||!canEdit(latest)||model.view!==view||model.loading||model.submitBusy||model.reviewBusy||d.submitting)throw Error('当前记录不能编辑，请核对审核状态');
+        d.busy=true;
+        try{
+          const saved=await api(annotationPath,body);
+          accept(row.id,saved.entry,false);
+          return saved.photo;
+        }finally{d.busy=false;status(row.id);}
+      }:null;
+      viewer({entryId:row.id,offerGuide:view==='records'},items,index,null,link,saveAnnotations);
+    }catch(error){root.showToast?.('打开照片失败：'+error.message,'error');}
   }
   function orderedReviewRows(rows){
     const groups=new Map([['行验',[]],['客验',[]],['',[]]]);
@@ -626,17 +656,32 @@
     if(!pendingSummaryEnabled()||model.loading||model.error||navigationState().dirty||navigationState().busy)return;
     const rows=orderedReviewRows(filtered());
     if(!rows.length)return;
+    const seen=rows.filter(row=>row.reviewState==='pending'&&!row.reviewRead);
+    let readRequest;
     const scope=root.__QC_NEXUS;
     const source=root.QcPendingReviewWorkbook.create({
       rows,columns:displayedColumns(rows,true),canEdit,reviewGroup,executionKey,options,api,requestKey,byId,
       scope:write=>root.__QC_NEXUS===scope&&model.view==='review'&&model.reviewTab==='pending'&&!model.loading&&!model.error&&!model.reviewBusy&&(!write||editable()),
       accept:(id,row)=>{accept(id,row);model.drafts.delete(id);},
       busy:()=>Boolean(model.detailEditing||root.QcInspectionSummary?.unsavedPhotoMarks),
-      close:render,value:(row,key)=>key==='date'?dateText(row):key==='reviewState'?'待审核':
+      close:async()=>{
+        await readRequest;
+        if(model.view==='review'&&model.reviewTab==='pending')render();
+      },value:(row,key)=>key==='date'?dateText(row):key==='reviewState'?'待审核':
         ['submittedAt','confirmedAt','lastChangedAt'].includes(key)?audit().time(row[key]):key.split('.').reduce((v,k)=>v?.[k],row),
       detail:(id,key,staging)=>detailEditor(id,key,staging),detailRows,photoAccept,readFile,
     });
-    root.QcReportWorkbook.openReview(opener,source);
+    if(trackReads()&&seen.length)source.opened=()=>{
+      readRequest??=(async()=>{
+        for(let i=0;i<seen.length;i+=500){
+          const batch=seen.slice(i,i+500);
+          const {read}=await api('review/mark-read',{entryIds:batch.map(row=>row.id),
+            revisions:Object.fromEntries(batch.map(row=>[row.id,row.revision]))});
+          for(const row of model.items)if(row.reviewState==='pending'&&read[row.id]===row.revision)row.reviewRead=true;
+        }
+      })().catch(error=>root.showToast?.('未能保存阅读状态：'+error.message,'error'));
+    };
+    if(root.QcReportWorkbook.openReview(opener,source))reviewGuide?.fade();
   }
 
   function patchRecordRows(host,rows,columns,changed){
@@ -755,9 +800,9 @@
   async function upload(id,control){
     const files=[...control.files];if(!files.length)return;
     control.disabled=true;
-    try{await uploadFiles(id,files);}finally{control.value='';control.disabled=false;}
+    try{await uploadFiles(id,files,{camera:control.hasAttribute('data-camera')});}finally{control.value='';control.disabled=false;}
   }
-  async function uploadFiles(id,files){
+  async function uploadFiles(id,files,{camera=false}={}){
     if(model.submitBusy||model.reviewBusy)return;
     const row=byId(id);if(!row||!canEdit(row)||!files.length)return;
     const d=draft(row);d.reading=(d.reading||0)+1;status(id);
@@ -769,7 +814,8 @@
         const oversized=files.find(file=>file.size>10*1024*1024);
         if(oversized)throw Error(oversized.name+' 超过 10 MB，请压缩或重新选择');
         const jobs=[];
-        for(const file of files){const content=await readFile(file);jobs.push({action:'photos',body:{name:file.name,content,requestKey:requestKey()}});}
+        for(const file of files){const content=await readFile(file);jobs.push({action:'photos',
+          preview:model.view==='records'&&files.length===1,camera,body:{name:file.name,content,requestKey:requestKey()}});}
         d.queue.push(...jobs);await pump(id);
       }catch(error){d.fileError=true;d.errorKind='photo';d.error=error.message;status(id);}
     });
@@ -1196,7 +1242,7 @@
       </div>`);
     if(refresh)host.querySelector('#qis-review-batch').before(refresh);
     refreshResultFilters();
-    const applyFilters=()=>{finishRowDrag(true);model.checked.clear();model.deleteChecked.clear();model.reviewAnchor='';model.reviewCursor='';render();};
+    const applyFilters=()=>{finishRowDrag(true);clearReviewGuide();model.checked.clear();model.deleteChecked.clear();model.reviewAnchor='';model.reviewCursor='';render();};
     host.querySelector('#qisPendingDate').onchange=applyFilters;
     host.querySelectorAll('[data-rfilter]').forEach(input=>{
       input.oninput=()=>{if(model.reviewBusy||model.deleteBusy){syncReviewFilters();return;}model.reviewFilters[input.dataset.rfilter]=input.value;applyFilters();};
@@ -1209,6 +1255,30 @@
     syncReviewFilters();
     host.querySelector('[data-reset-review]').onclick=()=>{if(model.reviewBusy||model.deleteBusy)return;resetReviewFilters();applyFilters();};
     host.querySelector('#qis-review-batch').onclick=()=>reviewAction(model.reviewTab==='pending'?'confirm':'revoke',filtered().filter(r=>model.checked.has(r.id)).map(r=>r.id));
+  }
+  function clearReviewGuide(){
+    reviewGuide?.destroy();
+    reviewGuide=null;
+  }
+  function updateReviewGuide(controls,entry,rows){
+    if(!trackReads()||!entry||entry.hidden){clearReviewGuide();return;}
+    const unread=rows.filter(row=>row.reviewState==='pending'&&row.reviewRead===false);
+    const read=rows.filter(row=>row.reviewState==='pending'&&row.reviewRead===true).length;
+    const opener=entry.querySelector('.wb-open');
+    let badge=opener.querySelector('.qc-guide-badge');
+    if(unread.length&&!badge){
+      badge=root.document.createElement('span');badge.className='qc-guide-badge';badge.setAttribute('aria-hidden','true');
+      opener.append(badge);
+    }
+    if(badge){badge.hidden=!unread.length;badge.textContent=unread.length;}
+    opener.setAttribute('aria-label','打开完整工作簿'+(unread.length?'，'+unread.length+' 条未读':''));
+    if(model.loading||model.error||!unread.length){
+      reviewGuide?.fade();
+      return;
+    }
+    if(reviewGuideShown)return;
+    reviewGuideShown=true;
+    reviewGuide=root.QcGlassGuide?.review(controls,{anchor:opener,unread:unread.length,read});
   }
   function updateReviewControls(rows){
     const pending=model.items.filter(r=>r.reviewState==='pending').length;
@@ -1281,6 +1351,7 @@
         entry.hidden=!pendingTab;
         entry.querySelector('button').disabled=Boolean(model.loading||model.error||!rows.length||navigationState().dirty||navigationState().busy);
       }
+      updateReviewGuide(controls,entry,rows);
     }
     const f=model.reviewFilters;
     const reset=controls?.querySelector('[data-reset-review]');
@@ -1320,12 +1391,24 @@
     const selected=[...new Set(ids)].filter(id=>visible.has(id)).map(byId).filter(row=>row&&(action==='confirm'?row.reviewState==='pending':row.reviewState==='approved'||row.legacyCompleted));
     if(!selected.length)return;
     const label=action==='confirm'?'审核确认':'反审核';
-    const el=audit().dialog(label, '<p>本次'+label+' <strong>'+selected.length+'</strong> 条，仅处理下列明确选中的记录。</p><ul>'+selected.map(r=>'<li>'+esc(r.customer)+' · '+esc(r.poNo)+' · '+esc(r.productNo)+' · 验货结果：'+esc(draft(r).result||'未填写')+(r.legacyCompleted?'（历史已完成；确认反审核后转入待审核）':'')+'</li>').join('')+'</ul>'+(action==='revoke'?'<label>反审核说明（可留空）<textarea data-reason rows="3" maxlength="20000"></textarea></label>':'<p>确认后记录进入验货汇总，当前内容将保存为审核快照。</p>')+'<p data-feedback role="status"></p><button data-cancel>取消</button> <button data-execute>'+(action==='revoke'?'确认反审核':label)+' '+selected.length+' 条</button>');
+    const unread=action==='confirm'&&trackReads()?selected.filter(row=>row.reviewRead===false).length:0;
+    const warning=unread?'<p class="qc-guide-warning">其中 '+unread+' 条尚未展开查看照片与完整明细</p>':'';
+    const openButton=unread?'<button type="button" data-view-unread>先去展开查看</button> ':'';
+    const el=audit().dialog(label, '<p>本次'+label+' <strong>'+selected.length+'</strong> 条，仅处理下列明确选中的记录。</p><ul>'+selected.map(r=>'<li>'+esc(r.customer)+' · '+esc(r.poNo)+' · '+esc(r.productNo)+' · 验货结果：'+esc(draft(r).result||'未填写')+(r.legacyCompleted?'（历史已完成；确认反审核后转入待审核）':'')+'</li>').join('')+'</ul>'+warning+(action==='revoke'?'<label>反审核说明（可留空）<textarea data-reason rows="3" maxlength="20000"></textarea></label>':'<p>确认后记录进入验货汇总，当前内容将保存为审核快照。</p>')+'<p data-feedback role="status"></p><button data-cancel>取消</button> '+openButton+'<button data-execute>'+(action==='revoke'?'确认反审核':label)+' '+selected.length+' 条</button>');
+    const openUnread=el.querySelector('[data-view-unread]');
+    if(openUnread)openUnread.onclick=()=>{
+      if(model.reviewBusy)return;
+      const opener=root.document.querySelector('.qis-open-review-book .wb-open');
+      if(!opener||opener.disabled)return;
+      el.addEventListener('close',()=>reviewWorkbook(opener),{once:true});el.close();
+    };
     let request=null;el.querySelector('[data-cancel]').onclick=()=>{if(!model.reviewBusy)el.close();};
     const button=el.querySelector('[data-execute]'),feedback=el.querySelector('[data-feedback]');
     el.addEventListener('cancel',event=>{if(model.reviewBusy)event.preventDefault();});
     button.onclick=async()=>{
-      if(model.reviewBusy)return;model.reviewBusy=true;button.disabled=true;el.querySelector('[data-close]').disabled=true;updateReviewControls(filtered());
+      if(model.reviewBusy)return;model.reviewBusy=true;button.disabled=true;
+      if(openUnread)openUnread.disabled=true;
+      el.querySelector('[data-close]').disabled=true;updateReviewControls(filtered());
       try{
         if(!request){for(const row of selected)await flushRow(row.id);request={requestKey:requestKey(),entries:selected.map(r=>({id:r.id,revision:byId(r.id).revision})),reason:el.querySelector('[data-reason]')?.value||''};if(el.querySelector('[data-reason]'))el.querySelector('[data-reason]').disabled=true;}
         const result=await api('review/'+action,request);
@@ -1335,7 +1418,7 @@
         else if(result.failed){feedback.textContent='成功 '+result.succeeded+' 条，失败 '+result.failed+' 条：'+result.results.filter(r=>!r.ok).map(r=>r.message).join('；')+'。失败记录仍保留，请关闭后刷新核对。';button.hidden=true;}
         else{el.close();root.showToast?.(label+'成功 '+result.succeeded+' 条','success');}
       }catch(error){feedback.textContent=error.message+'；可重试同一请求，系统会核对是否已经成功。';}
-      finally{model.reviewBusy=false;button.disabled=false;el.querySelector('[data-close]').disabled=false;updateReviewControls(filtered());}
+      finally{model.reviewBusy=false;button.disabled=false;if(openUnread)openUnread.disabled=false;el.querySelector('[data-close]').disabled=false;updateReviewControls(filtered());}
     };
   }
   async function reviewNotifications(view,generation,background=false){

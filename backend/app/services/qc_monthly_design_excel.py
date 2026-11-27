@@ -17,6 +17,7 @@ from PIL import Image as PILImage
 from app.services import qc_monthly_excel as legacy
 from app.services.qc_monthly_overview_excel import re_number, save_cached
 from app.services.qc_approved_statistics import company_heading
+from app.services.qc_report_empty_cols import formula_boxes, hide_sheet
 
 
 def put(cell, value):
@@ -168,7 +169,7 @@ def quality(layout,detail,data):
     details(detail,entries,2,[7,8,9])
     for r,entry in enumerate(entries,7):
         qty,pack,boxes=entry['values'][6:9]
-        if boxes=='' and re_number(qty) and re_number(pack) and float(pack)>0:
+        if formula_boxes(entry['values']):
             detail.formula(r,9,f'G{r}/H{r}',float(qty)/float(pack))
     rows=report['rows']
     last=6+len(entries)
@@ -246,6 +247,16 @@ def render(data,kind,factory):
         put(summary.sheet['A1'], company_heading(factory))
         quality(summary,layout('验货明细与退货原因'),data)
     for model in models:book.remove(model)
+    if data.get('hideEmptyCols'):
+        targets = {
+            'orders': [('订单查询与对账', 'orders'), ('彩星交付样式', 'caixing')],
+            'tracking': [('问题照片与整改进度', 'tracking')],
+            'quality': [('验货明细与退货原因', 'quality-detail')],
+        }[kind]
+        for title, policy in targets:
+            detail_rows = data['overview']['details'] if policy == 'quality-detail' else data['tables'][policy]
+            names = hide_sheet(book[title], policy, detail_rows)
+            data['hiddenColumns'].extend((title+'：'+n if kind=='orders' else n) for n in names)
     for sheet in book:
         # Rows skipped between populated sections serve only as visual separators.
         for r in range(1, sheet.max_row + 1):

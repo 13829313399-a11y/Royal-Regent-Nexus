@@ -32,7 +32,8 @@ COOKIE = "qc_mobile_session"
 TTL = 8 * 60 * 60
 TOKEN = re.compile(r"^[A-Za-z0-9_-]{43}$")
 HEADERS = {**NO_CACHE, "Referrer-Policy": "no-referrer"}
-MOBILE_ASSETS = frozenset({"index.html", "app.js", "app.css", "icon.svg", "remote.js", "qc-photo-shapes.js"})
+SHARED_ASSETS = frozenset({"qc-photo-shapes.js", "qc-glass-guide.js", "qc-glass-guide.css"})
+MOBILE_ASSETS = frozenset({"index.html", "app.js", "app.css", "icon.svg", "remote.js"}) | SHARED_ASSETS
 MOBILE_READY = {"service": "qc-mobile", "ready": True}
 DNS_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 
@@ -271,23 +272,19 @@ async def sheet(path: str, request: Request, db: Session = Depends(get_db), auth
     if not permitted:
         raise HTTPException(404, "移动验货未开放此操作")
     if request.method == "POST":
-        payload = await body(request, 15*1024*1024 if path.endswith("/photos") else 1024*1024)
+        await body(request, 15*1024*1024 if path.endswith("/photos") else 1024*1024)
     if request.method == "GET" and re.fullmatch(r"entries/[^/]+", path):
         with qc_inspection_sheet.store() as conn:
             item = qc_inspection_sheet.unpack(conn, qc_inspection_sheet.get(conn, grant["factory"], path.split('/')[1]))
         return JSONResponse(item, headers=HEADERS)
     response = await inspection_sheet_request(path, request, db, user, grant["factory"])
-    if request.method == 'POST' and path.endswith('/photos'):
-        with qc_inspection_sheet.store() as conn:
-            photo = conn.execute('SELECT id FROM photos WHERE entry_id=? AND origin=?', (path.split('/')[1], 'upload:'+payload['requestKey'])).fetchone()
-        data = json.loads(response.body)
-        data['uploadedPhotoId'] = photo['id'] if photo else None
-        return JSONResponse(data, headers=HEADERS)
+    if request.method == "POST" and path.endswith("/photos"):
+        response.headers.update(HEADERS)
     return response
 
 
 def mobile_asset_path(name):
-    return ASSETS / name if name == "qc-photo-shapes.js" else ASSETS / "mobile-inspection" / name
+    return ASSETS / name if name in SHARED_ASSETS else ASSETS / "mobile-inspection" / name
 
 
 @router.get("/app/{asset:path}")

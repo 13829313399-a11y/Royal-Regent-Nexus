@@ -42,6 +42,37 @@ def install_upstream(monkeypatch):
     return calls
 
 
+@pytest.mark.parametrize('mode', ['enforce', 'legacy'])
+def test_mark_read_follows_inspection_self_review_permission_and_validates_input(monkeypatch, mode):
+    monkeypatch.setenv('AUTHZ_MODE', mode)
+    monkeypatch.setenv('QC_DOSSIER_EMERGENCY_DISABLED','true')
+    with make_client(monkeypatch) as client:
+        install_upstream(monkeypatch)
+        login_as(client,'qc_inspector')
+        health='/api/qc-department/huaxing/api/health'
+        path = 'api/inspection-sheet/review/mark-read'
+        frame = client.get(health).json()['frame_url']
+        entry_id = 'a'*32
+        payload = {'entryIds': [entry_id], 'revisions': {entry_id: 1}}
+
+        def reads_allowed():
+            context = client.get(frame + 'nexus-context.js')
+            return json.loads(context.text.removeprefix('window.__QC_NEXUS = ').removesuffix(';'))['workflow']['reviewReads']
+
+        assert reads_allowed() is True
+        assert client.post(frame+path,json={'entryIds':[entry_id]}).status_code==422
+        assert client.post(frame+path,json={'entryIds':['bad'],'revisions':{'bad':1}}).status_code==422
+        response = client.post(frame + path, json=payload)
+        assert response.status_code == 200 and response.json() == {'read': {}}
+        assert client.post(frame.replace('/huaxing/', '/huadeng/') + path, json=payload).status_code == 403
+
+        grant_permission_override('qc_inspector', 'qc_inspection:result_write',
+                                  effect='deny', factory_id='huaxing', department='qc')
+        frame = client.get(health).json()['frame_url']
+        assert reads_allowed() is (mode == 'legacy')
+        assert client.post(frame + path, json=payload).status_code == (200 if mode == 'legacy' else 403)
+
+
 def test_session_factory_boundary_and_no_local_accounts(monkeypatch):
     with make_client(monkeypatch) as client:
         calls = install_upstream(monkeypatch)

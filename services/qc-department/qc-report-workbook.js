@@ -234,8 +234,9 @@ function mount(periodKey, kind, host, data, refresh){
 document.body.insertAdjacentHTML('beforeend','<dialog id="wb-dialog" aria-label="工作簿预览"><div class="wb-head"><div class="wb-nav"><span class="file-mark" aria-hidden="true">▤</span><div id="wb-templates" role="group" aria-label="报告模板"></div></div><span id="wb-status" role="status" title="按 Ctrl+S 或 ⌘S 保存"></span><button id="wb-export">导出 Excel</button><button id="wb-close" aria-label="关闭工作簿" title="关闭">×</button></div><div class="wb-formula"><output id="wb-address">A1</output><i>ƒx</i><textarea id="wb-value" rows="1" wrap="off" aria-label="单元格内容" readonly></textarea></div><div id="wb-grid"></div><div class="wb-foot"><div id="wb-tabs" aria-label="工作表"></div><span id="wb-mode" hidden>简洁预览 · 补录和导出照常</span><button id="wb-next" title="跳到下一个可编辑单元格">定位可编辑格 ↗</button></div></dialog><dialog id="wb-save-prompt" aria-labelledby="wb-save-title" aria-describedby="wb-save-message"><strong id="wb-save-title">保存更改？</strong><p id="wb-save-message"></p><div class="wb-save-actions"><button type="button" data-wb-choice="cancel" autofocus>取消</button><button type="button" data-wb-choice="discard">不保存</button><button type="button" data-wb-choice="save">保存</button></div></dialog>');
  const dialog=byId('wb-dialog'), valueInput=byId('wb-value'), statusText=byId('wb-status');
  let reviewRow=null,reviewColumn=null;
- const exportButton=byId('wb-export');
- let readyExport=null;
+  const exportButton=byId('wb-export');
+  let readyExport=null;
+  window.addEventListener('qc-export-option-change',clearReadyExport);
  function clearReadyExport(){
    readyExport=null;
    exportButton.textContent='导出 Excel';
@@ -429,10 +430,14 @@ async function switchBook(kind){
     changes.clear();receipt=null;
     book=result;bookQuery=query;selected[period]=kind;
     photoAutoRefreshAttempted=photoSourceChanged=false;
+    window.QcExportColumns.mount(exportButton,kind);
     byId('wb-mode').hidden=book.previewMode!=='grid';
     linkCells(book.cells);
     history.undo.length=history.redo.length=0;
-    if(book.sheets.length)drawSheet(0);
+    if(book.sheets.length){
+      drawSheet(0);
+      reviewSource?.opened?.();
+    }
     else{grid.replaceChildren(document.createTextNode('此期间没有记录'));tabs.replaceChildren();active=null;valueInput.value='';byId('wb-address').textContent='';}
     for(const tab of byId('wb-templates').querySelectorAll('button')){
       tab.setAttribute('aria-pressed',String(tab.dataset.kind===kind));
@@ -1210,10 +1215,7 @@ window.addEventListener('beforeunload',e=>{if(dialog.open&&(changes.size||drafti
 document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill(true);internalClipboard=null;}});
  byId('wb-close').onclick=closeBook;
  dialog.addEventListener('cancel',e=>{e.preventDefault();closeBook();});
- const excelTypes={
-   xlsx:{mime:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',magic:[0x50,0x4b,3,4]},
-   xls:{mime:'application/vnd.ms-excel',magic:[0xd0,0xcf,0x11,0xe0,0xa1,0xb1,0x1a,0xe1]}
- };
+ const {excelTypes}=window.QcExportColumns;
  const READY_EXPORT_TTL=120000;
  // OpenCode's Electron review browser exposes a native picker but rejects
  // createWritable(), after the picker has already created a zero-byte file.
@@ -1235,47 +1237,14 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill
      return {canceled:error.name==='AbortError'};
    }
  }
- async function readExport(url,fallbackName,expectedExt){
-   const response=await fetch(url,{cache:'no-store',redirect:'error'});
-   if(!response.ok){
-     const info=await response.json().catch(()=>({}));
-     throw Error(typeof info.detail==='string'?info.detail:info.detail?.message||'无法下载 Excel，请重试');
-   }
-   const disposition=response.headers.get('Content-Disposition')||'';
-   const encoded=disposition.match(/(?:^|;)\s*filename\*=UTF-8''([^;]+)/i)?.[1];
-   let name=fallbackName;
-   if(encoded)try{name=decodeURIComponent(encoded);}catch{/* Use the supplied fallback name. */}
-   const ext=name?.match(/\.(xlsx|xls)$/i)?.[1].toLowerCase();
-   if(ext!==expectedExt||/[\\/\u0000-\u001f\u007f]/.test(name)||!/^attachment(?:;|$)/i.test(disposition)||
-       response.headers.get('Content-Type')?.split(';')[0].trim().toLowerCase()!==excelTypes[ext].mime)
-     throw Error('服务未返回有效的 Excel 文件，请重新导出');
-   const blob=await response.blob(),{magic}=excelTypes[ext];
-   const declared=Number(response.headers.get('Content-Length'));
-   if(!response.headers.get('Content-Encoding')&&declared>0&&blob.size!==declared)
-     throw Error('Excel 下载不完整，未创建本机文件，请重新导出。');
-   const prefix=new Uint8Array(await blob.slice(0,magic.length).arrayBuffer());
-   if(!magic.every((byte,i)=>prefix[i]===byte))throw Error('Excel 文件为空或格式不正确，请重新导出');
-   if(ext==='xlsx'){
-     const start=Math.max(0,blob.size-65557),tail=new DataView(await blob.slice(start).arrayBuffer());
-     let complete=false;
-     for(let i=tail.byteLength-22;i>=0;i--){
-       if(tail.getUint32(i,true)!==0x06054b50||i+22+tail.getUint16(i+20,true)!==tail.byteLength)continue;
-       const count=tail.getUint16(i+10,true),size=tail.getUint32(i+12,true),offset=tail.getUint32(i+16,true);
-       if(!count||offset<4||size<46*count||offset+size!==start+i)break;
-       const directory=new DataView(await blob.slice(offset,offset+4).arrayBuffer());
-       complete=directory.getUint32(0,true)===0x02014b50;break;
-     }
-     if(!complete)throw Error('Excel 工作簿结构不完整，未创建本机文件。');
-   }else if(blob.size<1024||blob.size%512!==0)throw Error('XLS 工作簿结构不完整，未创建本机文件。');
-   return {blob,name,ext};
- }
  async function prepareReportExport(){
    const scope=new URLSearchParams(bookQuery),kind=scope.get('kind'),date=scope.get('day'),customer=scope.get('customer');
    const ext=kind==='detail'?'xls':'xlsx';
-   let url,name;
+    let url,name,hiddenColumns;
+    const hideEmptyCols=window.QcExportColumns.enabled(kind);
    if(kind==='daily'||kind==='annual-stats'){
      const annual=kind==='annual-stats';
-     const filters=annual?{year:date.slice(0,4),result:scope.get('result')}:{date};
+      const filters=annual?{year:date.slice(0,4),result:scope.get('result')}:{date,hideEmptyCols:hideEmptyCols?'1':'0'};
      const endpoint=annual?'approved-statistics/report/excel':'daily-report/export';
      url='api/'+endpoint+'?'+new URLSearchParams({...filters,customer,revision:book.sourceRevision});
      name=annual?(window.__QC_NEXUS.factoryLabel || window.getCompanyName?.() || '')+filters.year+'年验货统计表.xlsx':'每日验货情况统计表_'+date+'.xlsx';
@@ -1287,28 +1256,33 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill
         if(fresh.workbookSourceRevision!==book.workbookSourceRevision)throw Error('审核来源已变化，请重新打开工作簿后导出');
         sourceRevision=fresh.sourceRevision;
       }
-      const payload={date,customer,sourceRevision,...(issue?{period,photoQuality:'preview',allowPreviewFallback:false}:{template:kind,versions:book.versions})};
+       const payload={date,customer,sourceRevision,hideEmptyCols,...(issue?{period,photoQuality:'preview',allowPreviewFallback:false}:{template:kind,versions:book.versions})};
      const result=await api((issue?'issue-reports':period+'-templates')+'/excel','',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
      if(!/^api\/(weekly|monthly)-templates\/excel\/[a-zA-Z0-9.-]+$/.test(result.url))throw Error('下载地址无效');
-     url=result.url;name=result.filename;
+      url=result.url;name=result.filename;
+      hiddenColumns=result.hiddenColumns;
    }
-   return readExport(url,name,ext);
+    const file=await window.QcExportColumns.readExport(url,name,ext);
+    if(hideEmptyCols!==window.QcExportColumns.enabled(kind))throw Error('导出选项已变化，请重新导出');
+    return {...file,message:window.QcExportColumns.message(hideEmptyCols,hiddenColumns??file.hiddenColumns)};
  }
- function assertExportCurrent(query){
+ function assertExportCurrent(query,file){
    if(photoSourceChanged)throw Error('报表已更新，请重新打开核对后导出。');
    if(!dialog.open||bookQuery!==query||!window.__QC_NEXUS?.exportAllowed)throw Error('导出权限或工作簿已变化');
+   if(file&&readyExport!==file)throw Error('导出选项已变化，请重新导出');
  }
- async function writeVerifiedExcel(handle,blob,query){
+ async function writeVerifiedExcel(handle,file,query){
+    const {blob}=file;
    let writer;
    try{
      writer=await handle.createWritable();
-     assertExportCurrent(query);
-     await writer.write(blob);
-     assertExportCurrent(query);
+      assertExportCurrent(query,file);
+      await writer.write(blob);
+      assertExportCurrent(query,file);
      await writer.close();
    }catch{
      if(writer)await writer.abort().catch(()=>{});
-     assertExportCurrent(query);
+      assertExportCurrent(query,file);
      throw Error('未能写入 Excel。请关闭已打开的同名文件，或改选其他文件夹。');
    }
    try{
@@ -1333,8 +1307,10 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill
      clearReadyExport();
      if(!await allowWorkbookAction('export')||!dialog.open||exporting||view.inert)return;
    }
-   const query=bookQuery;
-    exporting=exportButton.disabled=true;view.inert=true;valueInput.readOnly=true;
+    const query=bookQuery;
+     exporting=exportButton.disabled=true;view.inert=true;valueInput.readOnly=true;
+     const option=exportButton.previousElementSibling;
+     if(option?.classList.contains('qc-export-option'))option.inert=true;
     setReviewNavigationDisabled(true);
    try{
      assertExportCurrent(query);
@@ -1345,7 +1321,7 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill
        assertExportCurrent(query);
        if(managedDownloads||typeof window.showSaveFilePicker!=='function'){
          sendToDownloadManager(file);
-         statusText.textContent='已发起下载：'+file.name;
+          statusText.textContent='已发起下载：'+file.name+' · '+file.message;
          return;
        }
        readyExport={...file,query,until:Date.now()+READY_EXPORT_TTL};
@@ -1357,20 +1333,21 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill
      statusText.textContent='请选择保存位置…';
      const file=readyExport;
      const {handle,canceled}=await chooseDestination(file.name,file.ext);
-     assertExportCurrent(query);
-     if(canceled){statusText.textContent='已取消，未下载文件。';return;}
+      if(canceled){statusText.textContent='已取消，未下载文件。';return;}
+      assertExportCurrent(query,file);
      if(!handle){
        sendToDownloadManager(file);
-       statusText.textContent='已发起下载：'+file.name;
+        statusText.textContent='已发起下载：'+file.name+' · '+file.message;
        clearReadyExport();
        return;
      }
      statusText.textContent='正在写入并校验，完成前请勿打开文件…';
-     await writeVerifiedExcel(handle,file.blob,query);
+      await writeVerifiedExcel(handle,file,query);
      clearReadyExport();
-     statusText.textContent='Excel 已保存并校验：'+handle.name;
+      statusText.textContent='Excel 已保存并校验：'+handle.name+' · '+file.message;
    }catch(error){statusText.textContent=error.message;}finally{
-     exporting=false;view.inert=false;exportButton.disabled=!book?.sheets.length;
+      exporting=false;view.inert=false;exportButton.disabled=!book?.sheets.length;
+      if(option?.classList.contains('qc-export-option'))option.inert=false;
      setReviewNavigationDisabled(false);
    }
  };

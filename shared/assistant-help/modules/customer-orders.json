@@ -290,7 +290,7 @@
       {
         "path": "backend/app/services/huaxing_order_legacy/new_order_excel.py",
         "symbol": "def _rewrite_formula_for_insert",
-        "sha256": "ff6a16dc5176e1b0063dc2939caac45bff5301d1ae44bc5ec26a01b77cc60eb2"
+        "sha256": "aae29c92bbc634e4149fe8e1f6519a0bbef318e978b8427a641048d520c06889"
       },
       {
         "path": "src/api/customerOrderLedger.ts",

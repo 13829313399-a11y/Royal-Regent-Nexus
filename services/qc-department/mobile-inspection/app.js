@@ -407,7 +407,7 @@ function renderPhotos(row) {
   $('photo-list').innerHTML = row.photos.map(photo =>
     '<div class="photo-row"><button class="photo-open" type="button" data-photo="' + photo.id + '">' +
       '<span class="thumb"><img src="' + escapeHtml(photoUrl(photo)) + '" alt=""></span>' +
-      '<span class="photo-text">' + escapeHtml(photo.name) + '<small>查看照片</small></span></button>' +
+      '<span class="photo-text">' + escapeHtml(photo.name) + '<small>'+(row.submittedAt?'查看照片':'查看 · 可标注')+'</small></span></button>' +
       (row.submittedAt ? '' : '<button class="icon-button" type="button" data-remove-photo="' + photo.id +
         '" aria-label="移除 ' + escapeHtml(photo.name) + '">' + icon('close') + '</button>') + '</div>').join('');
   for (const img of $('photo-list').querySelectorAll('img')) {
@@ -842,7 +842,16 @@ function showPhoto(photo) {
   image.src=photoUrl(photo);
   controls();
   if(!editable)return;
-  for(const button of tools)button.onclick=()=>{tool=button.dataset.markTool;controls();};
+  const actor=remote.context?.actor?.id;
+  let guide;
+  function selectTool(next){
+    tool=next;
+    if(next!=='browse')guide?.fade();
+    controls();
+  }
+  guide=window.QcGlassGuide?.photo(content.querySelector('.photo-markup-tools'),{actor,mobile:true});
+  sheet.addEventListener('close',()=>guide?.destroy(),{once:true});
+  for(const button of tools)button.onclick=()=>selectTool(button.dataset.markTool);
   function commitMarks(next){
     const target=remote.findPhoto(row,photo.id);
     if(!target||row.submittedAt){message('照片已移除或任务已提交，请核对当前记录。');return false;}
@@ -896,7 +905,10 @@ function showPhoto(photo) {
       const {mark,bounds}=drawing;
       const dx=(mark.x2-mark.x1)*bounds.width,dy=(mark.y2-mark.y1)*bounds.height;
       if(mark.type==='circle'?Math.abs(dx)>=4&&Math.abs(dy)>=4:Math.hypot(dx,dy)>=4){
-        if(commitMarks([...marks,mark]))redoStack.length=0;
+        if(commitMarks([...marks,mark])){
+          redoStack.length=0;
+          window.QcGlassGuide?.completePhoto(actor);
+        }
       }
     }
     drawing=null;paint();controls();
@@ -1049,10 +1061,15 @@ async function addPhotos(event) {
     refreshEntryStatus(row);
     return;
   }
-  row.photos.push(...files.map(file => ({ id: newPhotoId(), name: file.name || '验货照片', blob: file })));
+  const added=files.map(file => ({ id:newPhotoId(), name:file.name || '验货照片', blob:file }));
+  row.photos.push(...added);
   row.changedAt = new Date().toISOString();
   renderPhotos(row);
-  await change(row, true);
+  const stored=await change(row, true);
+  if(stored&&added.length===1&&current===row&&!row.submittedAt&&!sheet.open){
+    const photo=remote.findPhoto(row,added[0].id);
+    if(photo)showPhoto(photo);
+  }
 }
 
 $('camera').onchange = $('album').onchange = addPhotos;
