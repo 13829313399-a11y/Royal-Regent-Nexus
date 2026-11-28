@@ -225,7 +225,7 @@
     view.hidden=false;el('weeklyReportBody').hidden=true;applyLayout();
     if(active==='issues'){
       render();
-      await root.QcIssueReports.open('weekly',date,customer,{host:view,sharedCustomer:true,onCustomers:items=>syncCustomers(items,true),onBusy:busy=>{el('qwtCustomer').disabled=busy;}});
+      await root.QcIssueReports.open('weekly',date,customer,{host:view,endDate:el('weeklyDate').dataset.endDate,sharedCustomer:true,onCustomers:items=>syncCustomers(items,true),onBusy:busy=>{el('qwtCustomer').disabled=busy;}});
       return;
     }
     view.innerHTML='<p class="qwt-message" role="status">正在读取已审核验货记录…</p>';
@@ -280,6 +280,7 @@
     finish();if(dirty()){root.showToast?.('请先等待保存成功，再切换模板','error');return;}
     if(active==='issues')root.QcIssueReports?.pageChanged();
     active=kind;el('qwtChoice').value=kind;
+    root.QcReportDates?.sync(el('weeklyDate'));
     if(kind!=='issues'&&valid&&data&&data.date===el('weeklyDate').value)render();else await load();
   }
   let weekCustomers=[], photoCustomers=[];

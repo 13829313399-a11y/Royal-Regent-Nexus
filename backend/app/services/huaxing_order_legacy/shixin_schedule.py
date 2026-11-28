@@ -386,6 +386,11 @@ def _packing_from_block(block: str) -> tuple[str, str]:
         re.I,
     ):
         packaging = ""
+    # Product-specific Chinese requirements take precedence over the generic
+    # Packing line (which describes carton quantities, not the printed card).
+    business_packaging = re.findall(r'(?:正常)?(?:英文卡|客彩盒|客卡|客吊牌)', remarks)
+    if business_packaging:
+        packaging = '、'.join(dict.fromkeys(v.removeprefix('正常') for v in business_packaging))
     return pack_qty, packaging
 
 
@@ -515,8 +520,8 @@ def _parse_document_lines(
             "oc_no": "" if is_qf else parts["oc"].upper(),
             "ship_date": excel_date(parts["ship"]),
             "quantity": number(parts["qty"]),
-            "unit_price": 0 if is_qf else number(parts["price"]),
-            "amount": 0 if is_qf else number(parts["amount"]),
+            "unit_price": None if is_qf else number(parts["price"]),
+            "amount": None if is_qf else number(parts["amount"]),
             "english_name": _product_name_from_block(block),
             "product_name": _product_name_from_block(block),
             "pack_qty": number(pack_qty) if pack_qty else "",
@@ -527,6 +532,14 @@ def _parse_document_lines(
             "notes": "",
             "schedule_family": "seasons",
         }
+        # Formal PO notes cite the reservation per product, not per document.
+        qfs = {value.upper() for value in re.findall(r'(?<![A-Z0-9])QF\d{6,}(?:-\d+)?(?![A-Z0-9-])', block, re.I)}
+        if not is_qf and len(qfs) == 1:
+            record['oqf_no'] = next(iter(qfs)).upper()
+            record['_explicit_qf'] = True
+        standard = _match(r'需符合([^\n]*?标准)', block)
+        if standard:
+            record['standard'] = standard
         if record["quantity"] and record["pack_qty"]:
             record["cartons"] = math.ceil(record["quantity"] / number(record["pack_qty"]))
         records.append(record)
@@ -793,7 +806,7 @@ def reconcile_documents(documents: list[dict[str, Any]], existing: list[dict[str
             )
         ]
         candidate_qfs = {clean(candidate.get("oqf_no")).upper() for candidate in candidates}
-        if len(candidate_qfs) == 1:
+        if len(candidate_qfs) == 1 and not record.get('_explicit_qf'):
             record["oqf_no"] = next(iter(candidate_qfs))
 
     # 当前排期已经存在的同单同货号不再作为新单导出；若数量不同，

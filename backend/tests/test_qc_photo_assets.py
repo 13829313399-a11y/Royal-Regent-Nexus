@@ -17,6 +17,80 @@ from test_customer_order_ledger import engine,db
 from test_qc_monthly_templates import issue,DAY
 
 
+EXPORT_MARKS = [
+    dict(type='arrow', x1=.15, y1=.2, x2=.85, y2=.2),
+    dict(type='circle', x1=.25, y1=.45, x2=.75, y2=.85),
+]
+
+
+def neutral_photo(fmt='PNG', orientation=1, size=(720, 640)):
+    out = BytesIO()
+    exif = Image.Exif()
+    exif[274] = orientation
+    Image.new('RGB', size, '#b0b0b0').save(out, fmt, exif=exif)
+    return out.getvalue()
+
+
+def bright_red(rgb):
+    r, g, b = rgb
+    return r > 200 and g < 90 and b < 90
+
+
+def assert_rendered_marks(raw):
+    with Image.open(BytesIO(raw)) as image:
+        rgb = image.convert('RGB')
+        for x, y in ((.50, .20), (.25, .65)):
+            px, py = round(x * image.width), round(y * image.height)
+            assert any(bright_red(rgb.getpixel((px + dx, py + dy)))
+                       for dx in range(-2, 3) for dy in range(-2, 3))
+        assert not bright_red(rgb.getpixel((image.width // 2, round(image.height * .65))))
+
+
+def test_annotation_derivative_validates_marks_and_bypasses_decode_for_empty(monkeypatch):
+    arrow, circle = EXPORT_MARKS
+    malformed = [None, {}, {**arrow, 'type': []}, {**arrow, 'y2': True}, {**arrow, 'y2': float('nan')},
+                 {**arrow, 'y2': float('inf')}, {**arrow, 'y2': 10**500}, {**arrow, 'x1': -.1},
+                 {**arrow, 'x2': arrow['x1']}, {**circle, 'x2': circle['x1']}]
+    assert assets.valid_annotations([*malformed, *EXPORT_MARKS]) == EXPORT_MARKS
+    assert assets.valid_annotations(EXPORT_MARKS * 30) == EXPORT_MARKS * 20
+    assert assets.decode_annotations('{') == []
+    raw = neutral_photo()
+    monkeypatch.setattr(assets.Image, 'open', lambda *_: pytest.fail('empty marks must not decode'))
+    for value in ([], malformed, 'invalid'):
+        original, mime = assets.render_annotated(raw, value, mime='image/png', quality='original')
+        assert original is raw and mime == 'image/png'
+
+
+@pytest.mark.parametrize('fmt,mime,orientation', [('JPEG', 'image/jpeg', 6), ('PNG', 'image/png', 1)])
+def test_annotation_derivative_uses_display_orientation_and_correct_mime(fmt, mime, orientation):
+    raw = neutral_photo(fmt, orientation)
+    expected_size = (640, 720) if orientation == 6 else (720, 640)
+    for quality, expected_mime in [('original', mime), ('preview', 'image/jpeg')]:
+        rendered, rendered_mime = assets.render_annotated(raw, EXPORT_MARKS, mime=mime, quality=quality)
+        assert rendered != raw and rendered_mime == expected_mime
+        with Image.open(BytesIO(rendered)) as photo:
+            assert photo.size == expected_size and photo.getexif().get(274, 1) == 1
+        assert_rendered_marks(rendered)
+
+
+def test_annotation_derivative_keeps_original_and_preview_files():
+    raw = neutral_photo('JPEG', 6)
+    saved = upload_retained(entry(), raw)
+    pid = saved['photos'][0]['id']
+    with sheet.store() as conn:
+        metadata = assets.metadata(conn, pid)
+    paths = [assets.root() / metadata[variant]['path'] for variant in ('original', 'preview')]
+    before = [path.read_bytes() for path in paths]
+    sheet.save_photo_annotations('huaxing', saved['id'], dict(
+        photoId=pid, annotationVersion=0, annotations=EXPORT_MARKS), ACTOR)
+    for variant, expected in zip(('original', 'preview'), before):
+        content, mime = sheet.read_photo_version('huaxing', saved['id'], pid, variant)
+        assert content == expected
+        rendered, _ = assets.render_annotated(content, EXPORT_MARKS, mime=mime, quality=variant)
+        assert_rendered_marks(rendered)
+    assert [path.read_bytes() for path in paths] == before
+
+
 def image(fmt='JPEG',orientation=1,size=(2400,1600)):
     im=Image.effect_noise(size,25).convert('RGB');out=BytesIO();exif=Image.Exif();exif[274]=orientation;exif[270]='private metadata'
     im.save(out,fmt,exif=exif);return out.getvalue()

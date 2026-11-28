@@ -71,6 +71,11 @@ test('review guidance appears once on entering review, does not re-pop on row cl
   assert.equal(q('.qc-guide-badge').hidden,true);
   assert.equal(q('#qis-review-guide-slot'),null);
   assert.equal(p.calls.some(c=>c.url.endsWith('/confirm')),false);
+  p.w.QcInspectionSheet.clearReviewDates();
+  await p.w.QcInspectionSheet.loadReview('pending');
+  assert.match(q('.qc-guide-copy').textContent,/新上传 0 条.*已读 3 条/);
+  await p.w.QcInspectionSheet.loadReview('pending');
+  assert.equal(q('.qc-glass-guide').classList.contains('qc-guide-out'),false);
  }finally{p.dom.window.close();}
 });
 test('pending preview updates the released range after a quick drag ending outside the table',async()=>{

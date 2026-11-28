@@ -118,7 +118,11 @@ def _detail(item, marker, index):
     row['editableFields'] = {i:f'detail:{row["id"]}:{field}' for i,field in DETAIL_FIELDS.items()
                              if isinstance(row['values'][i],str) and not row['values'][i].strip()}
     # References are from the same frozen approval as the text, never PO/name matching.
-    row['photos'] = [dict(id=p['id'], name=p.get('name','验货照片')) for p in item.get('photos',[]) if isinstance(p,dict) and p.get('id')]
+    row['photos'] = [
+        {'id': p['id'], 'name': p.get('name', '验货照片'),
+         **({'annotations': p['annotations']} if p.get('annotations') else {})}
+        for p in item.get('photos') or [] if isinstance(p, dict) and p.get('id')
+    ]
     return row
 
 

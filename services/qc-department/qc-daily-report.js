@@ -281,10 +281,16 @@
     if (restoreFocus) trigger.focus();
   }
 
-  function commit(value) {
+  function commit(value, endDate = '') {
     const input = open.input;
     close(true);
-    if (input.disabled || input.value === value) return;
+    if (input.disabled || (input.value === value && (input.dataset.endDate || '') === endDate)) return;
+    if (input.id === 'weeklyDate' && root.QcWeeklyTemplates?.navigationState().dirty) {
+      root.showToast?.('请先保存或处理失败的周报补充内容','error');
+      return;
+    }
+    if (endDate) input.dataset.endDate = endDate;
+    else delete input.dataset.endDate;
     input.value = value;
     input.dispatchEvent(new root.Event('change', {bubbles:true}));
     sync(input); // A template with an unsaved edit may have restored the previous value.
@@ -365,7 +371,14 @@
       const currentDate = today();
       for (let day = 1; day <= first.getUTCDate(); day++) {
         const value = prefix + '-' + pad(day);
-        choice(day, value, selected === value, () => commit(value), currentDate === value);
+        const pressed = kind === 'range' && !open.start && input.dataset.endDate
+          ? selected <= value && value <= input.dataset.endDate : value === (open.start || selected);
+        choice(day, value, pressed, () => {
+          if(kind !== 'range')return commit(value);
+          if(!open.start){open.start=value;draw();return;}
+          const [from,to]=[open.start,value].sort();
+          commit(from,to);
+        }, currentDate === value);
       }
     } else if (view === 'months') {
       for (let m = 1; m <= 12; m++) {
@@ -404,7 +417,12 @@
     if (kind !== 'year') {
       const footer = doc.createElement('div');
       footer.className = 'qdr-picker-footer';
-      footer.append(makeButton('清除', () => commit('')), makeButton(kind === 'month' ? '本月' : '今天',
+      if(kind==='range'){
+        const hint=doc.createElement('span');
+        hint.setAttribute('role','status');
+        hint.textContent=open.start ? open.start+' 起，选结束日' : '先选开始日，再选结束日';
+        footer.append(hint, makeButton('本周', () => commit(today())));
+      }else footer.append(makeButton('清除', () => commit('')), makeButton(kind === 'month' ? '本月' : '今天',
         () => commit(kind === 'month' ? today().slice(0,7) : today())));
       panel.append(footer);
     }
@@ -415,7 +433,7 @@
     if (open?.trigger === trigger) { close(true); return; }
     close();
     if (input.disabled) return;
-    const kind = input.tagName === 'SELECT' ? 'year' : input.getAttribute('type') === 'month' ? 'month' : 'day';
+    const kind = issueRange(input) ? 'range' : input.tagName === 'SELECT' ? 'year' : input.getAttribute('type') === 'month' ? 'month' : 'day';
     const [year, month] = (input.value || today()).split('-').map(Number);
     const panel = doc.createElement('div');
     panel.className = 'qdr-date-panel';
@@ -424,23 +442,30 @@
     panel.setAttribute('role','dialog');
     panel.setAttribute('aria-label',trigger.getAttribute('aria-label'));
     doc.body.append(panel);
-    open = {input, trigger, panel, year, month:month || 1, kind, view:{year:'years',month:'months',day:'days'}[kind]};
+    open = {input, trigger, panel, year, month:month || 1, kind, view:{year:'years',month:'months',day:'days',range:'days'}[kind]};
     trigger.setAttribute('aria-controls',panel.id);
     trigger.setAttribute('aria-expanded','true');
     draw();
   }
 
-  // The weekly report always covers Monday through Sunday for the chosen day.
-  function weekCaption(value) {
+  function issueRange(input) {
+    return input.id==='weeklyDate' && doc.getElementById('qwtChoice')?.value==='issues';
+  }
+  function weekStart(value) {
     const monday = new Date(value + 'T00:00:00Z');
     monday.setUTCDate(monday.getUTCDate() - (monday.getUTCDay() + 6) % 7);
-    const sunday = new Date(monday);
-    sunday.setUTCDate(monday.getUTCDate() + 6);
+    return monday;
+  }
+  function weekCaption(value, endDate) {
+    const start = endDate ? new Date(value+'T00:00:00Z') : weekStart(value);
+    const end = endDate ? new Date(endDate+'T00:00:00Z') : new Date(start);
+    if(!endDate)end.setUTCDate(start.getUTCDate() + 6);
     const short = date => (date.getUTCMonth() + 1) + '月' + date.getUTCDate() + '日';
-    if (monday.getUTCMonth() === sunday.getUTCMonth()) {
-      return (monday.getUTCMonth() + 1) + '月' + monday.getUTCDate() + '–' + sunday.getUTCDate() + '日';
+    if(start.getUTCFullYear()!==end.getUTCFullYear() && endDate)return value+' 至 '+endDate;
+    if (start.getUTCMonth() === end.getUTCMonth()) {
+      return (start.getUTCMonth() + 1) + '月' + start.getUTCDate() + '–' + end.getUTCDate() + '日';
     }
-    return short(monday) + '–' + short(sunday);
+    return short(start) + '–' + short(end);
   }
 
   function sync(input) {
@@ -455,7 +480,7 @@
       trigger.setAttribute('aria-expanded','false');
       field.append(trigger);
       field.classList.add('qdr-date-ready');
-      if (input.tagName === 'SELECT') {
+      if (input.tagName === 'SELECT' || input.id==='weeklyDate' && root.__QC_NEXUS?.factory) {
         input.hidden = true;
         field.querySelector('label').htmlFor = trigger.id = input.id + '-trigger';
       }
@@ -467,10 +492,11 @@
       input.addEventListener('change', () => sync(input));
     }
     const [y,m,d] = input.value.split('-').map(Number);
+    if(input.id==='weeklyDate' && root.__QC_NEXUS?.factory)field.querySelector('label').textContent=issueRange(input)?'日期范围':'报告周';
     const label = field.querySelector('label').textContent;
     let display = y ? y+'年'+(m ? m+'月' : '')+(d ? d+'日' : '') : '选择'+label;
     if (y && root.__QC_NEXUS?.factory) {
-      if (input.id === 'weeklyDate') display = weekCaption(input.value);
+      if (input.id === 'weeklyDate') display = weekCaption(input.value, issueRange(input) && input.dataset.endDate);
       if (input.id === 'dailyDate') display = m+'月'+d+'日';
       if (input.id === 'monthlyMonth') display = m+'月';
     }

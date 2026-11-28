@@ -1409,6 +1409,13 @@ def create_unified_customer_preview(
                 for row in detail_rows:
                     describe_history(row, history, book)
         finally: book.close()
+    if (factory_id, customer_code) == ('huaxing', 'seasons'):
+        from .customer_order_seasons_layout import annotate
+        book = _load_workbook(schedule_content)
+        try:
+            annotate(book, detail_rows)
+        finally:
+            book.close()
     for row in rows:
         mark_pending_information(row)
         _refresh_status(row)

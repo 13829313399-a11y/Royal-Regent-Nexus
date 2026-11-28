@@ -78,7 +78,15 @@ def build(destination, factory, green_toys_only=False, huaxing_customer=None, si
         from reportlab.pdfgen import canvas
         template = fixtures('test_customer_order_huaxing_unified.py', {'template', 'data'}, mapping=hx_mapping)
         content = template['data'](template['template'](huaxing_customer))
-        if huaxing_customer == 'edu':
+        if huaxing_customer == 'seasons':
+            pages, customer, rows = ['''SEASONS ORDER QUICK FORM
+Customer Name: SAMPLE CUSTOMER
+Order Date: 2026/11/27
+OQF No.: QF90000001
+W90001 SHIPDATE: 2027/04/18 120
+SAMPLE TOY
+Packing: Outer: 12 PCS'''], 'SEASONS (施信)', 1
+        elif huaxing_customer == 'edu':
             fixture = fixtures('test_customer_order_edu_pdf.py', {'page'})
             pages, customer, rows = [fixture['page']()], 'EDU', 1
         elif huaxing_customer == 'dickie':
@@ -160,6 +168,6 @@ if __name__ == '__main__':
     parser.add_argument('--factory', required=True, choices=['huakang-a', 'huakang-d', 'huaxing', 'huadeng'])
     parser.add_argument('--green-toys-only', action='store_true')
     parser.add_argument('--single-customer', choices=['casdon','jakks','goliath','simba','spin','zuru'])
-    parser.add_argument('--huaxing-customer', choices=['caixing','edu','dickie'])
+    parser.add_argument('--huaxing-customer', choices=['caixing','edu','dickie','seasons'])
     args = parser.parse_args()
     build(args.destination, args.factory, args.green_toys_only, args.huaxing_customer, args.single_customer)

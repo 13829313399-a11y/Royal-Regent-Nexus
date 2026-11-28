@@ -1,20 +1,22 @@
 """File-backed QC originals and previews. Photo IDs and approval snapshots stay stable."""
+from collections import OrderedDict
 from contextvars import ContextVar
 from functools import wraps
-from threading import BoundedSemaphore
+from threading import BoundedSemaphore, Lock
 from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
 import asyncio
 import json
 import logging
+import math
 import os
 import sqlite3
 import time
 import warnings
 from uuid import uuid4
 from fastapi import HTTPException
-from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageDraw, ImageOps, UnidentifiedImageError
 from app.core.config import settings
 
 # Also register in fresh export/read workers which have not processed an upload.
@@ -47,6 +49,148 @@ MIMES = {
 }
 DISPLAY_AS_PNG = {'MPO', 'HEIF', 'HEIC', 'AVIF', 'TIFF', 'BMP'}
 DISPLAY_MIME_FALLBACK = {'image/heif', 'image/heic', 'image/avif', 'image/tiff', 'image/bmp'}
+ANNOTATION_COORDS = ('x1', 'y1', 'x2', 'y2')
+RENDER_CACHE_LIMIT = 64
+RENDER_CACHE_BYTES = 16 * 1024 * 1024
+_render_cache = OrderedDict()
+_render_cache_bytes = 0
+_render_cache_lock = Lock()
+
+
+def valid_annotations(annotations):
+    if not isinstance(annotations, list):
+        return []
+    valid = []
+    for mark in annotations[:40]:
+        if not isinstance(mark, dict) or mark.get('type') not in ('arrow', 'circle'):
+            continue
+        coords = [mark.get(key) for key in ANNOTATION_COORDS]
+        if not all(type(value) in (int, float) and 0 <= value <= 1 for value in coords):
+            continue
+        x1, y1, x2, y2 = coords
+        if (x1, y1) == (x2, y2) or (mark['type'] == 'circle' and (x1 == x2 or y1 == y2)):
+            continue
+        valid.append(dict(type=mark['type'], **dict(zip(ANNOTATION_COORDS, map(float, coords)))))
+    return valid
+
+
+def decode_annotations(value):
+    try:
+        return valid_annotations(json.loads(value)) if value else []
+    except (ValueError, TypeError, RecursionError):
+        return []
+
+
+def has_annotation_table(conn):
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='photo_annotations'"
+    ).fetchone() is not None
+
+
+def entry_photos_sql(conn):
+    if has_annotation_table(conn):
+        return """SELECT p.*, m.annotations FROM photos p
+            LEFT JOIN photo_annotations m ON m.photo_id=p.id
+            WHERE p.entry_id=? AND p.removed=0 ORDER BY p.created_at,p.id"""
+    return """SELECT *, NULL AS annotations FROM photos
+        WHERE entry_id=? AND removed=0 ORDER BY created_at,id"""
+
+
+def render_annotated(content, annotations, *, mime, quality):
+    """Render a derivative only; the caller has already checked access and revision."""
+    marks = valid_annotations(annotations)
+    if not marks:
+        return content, mime
+    key = (sha256(content).digest(), json.dumps(marks, sort_keys=True, separators=(',', ':')), quality)
+    with _render_cache_lock:
+        if key in _render_cache:
+            _render_cache.move_to_end(key)
+            return _render_cache[key]
+    return _render_cached(key, content, marks, quality)
+
+
+@bounded
+def _render_cached(key, content, marks, quality):
+    global _render_cache_bytes
+    # A different request may have populated the entry while we waited for a slot.
+    with _render_cache_lock:
+        if key in _render_cache:
+            _render_cache.move_to_end(key)
+            return _render_cache[key]
+    try:
+        with Image.open(BytesIO(content)) as original:
+            if original.width * original.height > 40_000_000:
+                raise HTTPException(422, '单张照片最多 4000 万像素，请缩小尺寸后重试')
+            source_format = original.format
+            ImageOps.exif_transpose(original, in_place=True)
+            base = original.convert('RGBA')
+        with base, _annotation_overlay(base.size, marks) as overlay:
+            with Image.alpha_composite(base, overlay) as composed:
+                image = composed.convert('RGB')
+        with image:
+            result = _encode_annotated(image, source_format, quality)
+    except (OSError, ValueError, EOFError, Image.DecompressionBombError):
+        raise HTTPException(422, '无法读取照片以合成标注') from None
+    size = len(result[0])
+    if size <= RENDER_CACHE_BYTES:
+        with _render_cache_lock:
+            previous = _render_cache.pop(key, None)
+            if previous is not None:
+                _render_cache_bytes -= len(previous[0])
+            _render_cache[key] = result
+            _render_cache_bytes += size
+            while len(_render_cache) > RENDER_CACHE_LIMIT or _render_cache_bytes > RENDER_CACHE_BYTES:
+                _, (evicted, _) = _render_cache.popitem(last=False)
+                _render_cache_bytes -= len(evicted)
+    return result
+
+
+def _annotation_overlay(size, marks):
+    width, height = size
+    scale = 2 if max(size) <= 2400 else 1
+    stroke = max(2.0, min(size) * .006) * scale
+    overlay = Image.new('RGBA', (width * scale, height * scale))
+    draw = ImageDraw.Draw(overlay)
+    # Match qc-photo-shapes.js: normalization, centered strokes and round arrow ends.
+    for thickness, color in ((stroke + max(2 * scale, stroke * .35), (40, 7, 6, 180)),
+                             (stroke, (248, 59, 56, 255))):
+        line_width = max(1, round(thickness))
+        half = line_width / 2
+        for mark in marks:
+            x1, x2 = (mark[key] * width * scale for key in ('x1', 'x2'))
+            y1, y2 = (mark[key] * height * scale for key in ('y1', 'y2'))
+            if mark['type'] == 'circle':
+                draw.ellipse((min(x1, x2) - half, min(y1, y2) - half,
+                              max(x1, x2) + half, max(y1, y2) + half),
+                             outline=color, width=line_width)
+                continue
+            angle = math.atan2(y2 - y1, x2 - x1)
+            head = min(stroke * 5.5, math.hypot(x2 - x1, y2 - y1) * .5)
+            start, tip = (x1, y1), (x2, y2)
+            wings = [(x2 - head * math.cos(angle + offset), y2 - head * math.sin(angle + offset))
+                     for offset in (.65, -.65)]
+            for endpoint in (start, *wings):
+                draw.line((endpoint, tip), fill=color, width=line_width)
+            for x, y in (start, tip, *wings):
+                draw.ellipse((x - half, y - half, x + half, y + half), fill=color)
+    return overlay.resize(size, Image.Resampling.LANCZOS) if scale > 1 else overlay
+
+
+def _encode_annotated(image, source_format, quality):
+    if quality == 'original' and source_format in DISPLAY_AS_PNG | {'PNG'}:
+        output = BytesIO()
+        image.save(output, 'PNG', optimize=True)
+        if output.tell() <= 32 * 1024 * 1024:
+            return output.getvalue(), 'image/png'
+    qualities = (settings.qc_photo_preview_quality,) if quality == 'preview' else (92,)
+    if quality == 'preview' and settings.qc_photo_preview_quality >= 70:
+        qualities = range(settings.qc_photo_preview_quality, 69, -5)
+    for jpeg_quality in qualities:
+        output = BytesIO()
+        image.save(output, 'JPEG', quality=jpeg_quality, subsampling=0, optimize=True, exif=b'')
+        if quality != 'preview' or output.tell() <= settings.qc_photo_preview_target_bytes:
+            break
+    return output.getvalue(), 'image/jpeg'
 
 
 def root():

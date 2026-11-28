@@ -27,6 +27,9 @@
     return report;
   }
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const photoSrc=(row,photo)=>row.revision!=null
+    ? 'api/report-workbook/photo?'+new URLSearchParams({entry:row.id,revision:row.revision,photo:photo.id})
+    : 'api/inspection-sheet/entries/'+encodeURIComponent(row.id)+'/photos/'+encodeURIComponent(photo.id);
   const el = id => doc.getElementById(id);
   let active = '', data = null, valid = false, date = '', customer = '', sequence = 0, editor = null;
   let pending = {}, receipt = null, sending = false, paused = false, error = '', conflict = null, timer, storageError = false;
@@ -114,7 +117,12 @@
         const dateHint=i===({orders:8,tracking:0,qualityDetails:1,overviewDetails:1,all:1,customers:1,caixing:0,issues:0}[kind]) ? (row.dateSource==='schedule'?'历史记录：计划日期回退':'实际验货日期') : '已审核原值或计算字段，只读';
         const rowLabel=row.poNo || data.customers.find(c=>c.key===key)?.label || overviewLabel || '月报';
         let content=field&&data.canEdit ? '<button class="qmt-cell" data-customer="'+key+'" data-field="'+field+'" title="'+esc(v)+'" aria-label="'+esc(rowLabel+' '+headers[i])+'">'+esc(v)+'</button>' : '<span title="'+esc((v!==''?String(v)+'\n':'')+(field?'当前账号无填写权限':dateHint))+'">'+esc(v)+'</span>';
-        if((kind==='issues'&&i===12)||(kind==='tracking'&&i===12)){content='<div class="qmt-photos">'+row.photos.map(p=>'<button class="qmt-photo" data-src="api/inspection-sheet/entries/'+encodeURIComponent(row.id)+'/photos/'+encodeURIComponent(p.id)+'" aria-label="查看'+esc(p.name)+'"><img loading="lazy" src="api/inspection-sheet/entries/'+encodeURIComponent(row.id)+'/photos/'+encodeURIComponent(p.id)+'" alt="'+esc(p.name)+'"></button>').join('')+'</div>';}
+        if(i===12&&(kind==='issues'||kind==='tracking')){
+          content='<div class="qmt-photos">'+row.photos.map(photo=>{
+            const src=esc(photoSrc(row,photo)),name=esc(photo.name);
+            return `<button class="qmt-photo" data-src="${src}" aria-label="查看${name}"><img loading="lazy" src="${src}" alt="${name}"></button>`;
+          }).join('')+'</div>';
+        }
         if(kind==='overviewIssues'&&i===1&&row.context)content='<small class="qmt-record-context">'+esc(row.context)+'</small>'+content;
         return '<td'+(field&&data.canEdit?' class="qmt-editable"':'')+'>'+content+'</td>';
       }).join('')+'</tr>';

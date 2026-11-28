@@ -195,8 +195,22 @@ class SpinPOParser:
 
     @staticmethod
     def _candidate_lines(text: str) -> Iterable[str]:
+        # A detail can end on one page and resume below the repeated heading.
+        # Remove the complete heading region, not a fragile list of addresses.
+        in_header = False
         for raw in text.splitlines():
             line = re.sub(r"\s+", " ", raw.replace("\xa0", " ")).strip()
+            if line == 'PURCHASE ORDER':
+                in_header = True
+            if in_header:
+                if re.match(r'No\s+ORDERED\s+DESCRIPTION', line, re.I):
+                    in_header = False
+                    continue
+                if SpinPOParser.LINE_RE.match(line):
+                    # Converted Excel often omits the repeated column title.
+                    in_header = False
+                else:
+                    continue
             if line:
                 yield line
 
@@ -219,6 +233,8 @@ class SpinPOParser:
         current_component: dict[str, Any] | None = None
 
         for raw in block[1:]:
+            if raw.startswith(('TOTAL NET VALUE', 'TERMS AND CONDITIONS', 'COMMENTS')):
+                break
             if self._is_header_noise(raw):
                 continue
 
@@ -252,9 +268,13 @@ class SpinPOParser:
                 collecting_customer = False
                 continue
 
-            if raw.lower().startswith("customer:"):
+            if re.match(r'(?:Customer|Ultimate Consignee)\s*:', raw, re.I):
                 customer_parts = [raw.split(":", 1)[1].strip()]
                 collecting_customer = True
+                continue
+
+            if raw.startswith(('Final Destination:', 'DOM ', 'DRAW FROM CONTRACT')):
+                collecting_customer = False
                 continue
 
             if collecting_customer:

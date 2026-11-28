@@ -7,11 +7,16 @@ from app.services.qc_inspection_summary import dump
 from app.services.qc_approved_statistics import factory_label
 
 MAX_REPORT_ROWS = 5000
-def bounds(day, period):
+def bounds(day, period, end_date=None):
     try:
         selected = date.fromisoformat(day)
         if selected.isoformat() != day or period not in ('weekly','monthly','yearly'):
             raise ValueError()
+        if end_date is not None:
+            end = date.fromisoformat(end_date)
+            if period != 'weekly' or end.isoformat() != end_date or end < selected:
+                raise ValueError()
+            return day, end_date
     except (ValueError, TypeError):
         raise HTTPException(422, '请选择有效的报表周期和日期') from None
     if period in ('weekly','monthly'):
@@ -19,9 +24,9 @@ def bounds(day, period):
     return f'{selected.year:04}-01-01', f'{selected.year:04}-12-31'
 
 
-def query(factory, day, period, customer='', *, workbook_preview=False, write_entry=None):
+def query(factory, day, period, customer='', *, workbook_preview=False, write_entry=None, end_date=None):
     factory_label(factory)
-    start, end = bounds(day, period)
+    start, end = bounds(day, period, end_date)
     # query streams a SQLite cursor; its existing 50k rows / 64MB snapshot guard
     # applies before any photos are read. Current lineage/approval rules are shared.
     snapshots = []
@@ -75,18 +80,18 @@ def prepare(factory, owner, body):
     body, enabled = split_option(body)
     from app.services import qc_monthly_excel as excel
     required={'date','period','customer','sourceRevision','photoQuality','allowPreviewFallback'}
-    if (not isinstance(body,dict) or set(body)!=required
-            or any(not isinstance(body[k],str) for k in required-{'allowPreviewFallback'})
+    if (not isinstance(body,dict) or not required <= set(body) <= required | {'endDate'}
+            or any(not isinstance(body[k],str) for k in set(body)-{'allowPreviewFallback'})
             or body['photoQuality'] not in {'preview','original'}
             or type(body['allowPreviewFallback']) is not bool):
         raise HTTPException(422,'图文导出参数不正确')
-    data=query(factory,body['date'],body['period'],body['customer'])
+    data=query(factory,body['date'],body['period'],body['customer'],end_date=body.get('endDate'))
     data.update(hideEmptyCols=enabled, hiddenColumns=[])
     if data['sourceRevision']!=body['sourceRevision']:
         raise HTTPException(409,'验货记录或补录已变化，请刷新预览后重试')
     data.update(photoQuality=body['photoQuality'],allowPreviewFallback=body['allowPreviewFallback'],fallbackPhotos=[])
     content=excel.render(data,'issues',factory)
-    fresh=query(factory,body['date'],body['period'],body['customer'])
+    fresh=query(factory,body['date'],body['period'],body['customer'],end_date=body.get('endDate'))
     if fresh['sourceRevision']!=data['sourceRevision']:
         raise HTTPException(409,'导出期间记录已变化，请刷新后重试')
     quality='mixed' if data['fallbackPhotos'] else body['photoQuality']

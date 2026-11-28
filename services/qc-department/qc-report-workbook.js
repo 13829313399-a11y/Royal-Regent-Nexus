@@ -21,7 +21,8 @@ function params(kind=selected[period],periodKey=period) {
   if(periodKey==='review')return new URLSearchParams({kind}).toString();
   const cfg=periods[periodKey],date=byId(cfg.date).value;
   const day=periodKey==='yearly'?date+'-01-01':periodKey==='monthly'?date+'-01':date;
-  const query=new URLSearchParams({kind,day,customer:byId(cfg.customer).value});
+   const query=new URLSearchParams({kind,day,customer:byId(cfg.customer).value});
+   if(kind==='issues' && byId(cfg.date).dataset.endDate)query.set('endDate',byId(cfg.date).dataset.endDate);
   if(kind==='annual-stats')query.set('result',document.querySelector('#qstats-root [data-result][aria-pressed=true]').dataset.result);
   return query.toString();
 }
@@ -168,9 +169,9 @@ function showMonthlyRates(host, points){
 const columns={
   daily:[['订单',[['客户',0],['合同号',1],['产品',4]]],['验货',[['数量',5],['结果',8],['问题',9]]],['跟进',[['备注',12]]]],
   detail:[['订单',[['客户',2],['产品',6]]],['本周验货',[['日期',1],['数量',7],['结果',10]]],['跟进',[['备注',17]]]],
-  issues:[['验货记录',[['日期',0],['客户',1],['产品',4]]],['问题跟进',[['结果',10],['验货问题',11],['改善措施',15]]]],
+  issues:[['验货记录',[['日期',0],['客户',1],['产品',4]]],['问题跟进',[['结果',10],['验货问题',11],['现场照片',12],['改善措施',15]]]],
   orders:[['订单',[['客户',1],['PO 号',3],['产品',6]]],['验货',[['日期',8],['数量',14],['结果',10]]],['跟进',[['备注',20]]]],
-  tracking:[['验货问题',[['客户',1],['产品',4],['问题',11]]],['整改跟踪',[['改善措施',15],['责任人',16],['完成情况',18]]]]
+  tracking:[['验货问题',[['客户',1],['产品',4],['问题',11],['现场照片',12]]],['整改跟踪',[['改善措施',15],['责任人',16],['完成情况',18]]]]
 };
 function emptyRow(columnCount, showScene) {
   const detail='此期间没有记录';
@@ -212,7 +213,21 @@ function mount(periodKey, kind, host, data, refresh){
     const groups=columns[kind==='annual-issues'?'tracking':kind], cols=groups.flatMap(g=>g[1]);
     const band=['monthly','yearly'].includes(periodKey)?'<tr class="skim-groups">'+groups.map(([name,items])=>'<th scope="colgroup" colspan="'+items.length+'"><span>'+esc(name)+'</span></th>').join('')+'</tr>':'';
     const inspectionTotal=['issues','annual-issues'].includes(kind)?data.inspectionTotal:data.total;
-    scroll.innerHTML='<table class="skim"><thead>'+band+'<tr>'+cols.map(([label])=>'<th scope="col">'+esc(label)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+cols.map(([,i])=>'<td>'+esc(r.values[i]===''?'—':r.values[i])+'</td>').join('')+'</tr>').join('')+(!rows.length?emptyRow(cols.length,inspectionTotal===0):'')+'</tbody></table>';
+    const withPhotos=['issues','tracking','annual-issues'].includes(kind);
+    function cell(row,index){
+      if(!withPhotos||index!==12||!row.photos?.length)return '<td>'+esc(row.values[index]===''?'—':row.values[index])+'</td>';
+      return '<td><div class="qmt-photos">'+row.photos.map((photo,i)=>{
+        const src='api/report-workbook/photo?'+new URLSearchParams({entry:row.id,revision:row.revision,photo:photo.id});
+        return '<button type="button" class="qmt-photo" data-report-photo="'+i+'" aria-label="放大现场照片 '+(i+1)+'"><img loading="lazy" src="'+esc(src)+'" alt="'+esc(photo.name||'现场照片')+'"></button>';
+      }).join('')+'</div></td>';
+    }
+    scroll.innerHTML='<table class="skim"><thead>'+band+'<tr>'+cols.map(([label])=>'<th scope="col">'+esc(label)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+cols.map(([,i])=>cell(r,i)).join('')+'</tr>').join('')+(!rows.length?emptyRow(cols.length,inspectionTotal===0):'')+'</tbody></table>';
+    if(withPhotos)scroll.onclick=event=>{
+      const trigger=event.target.closest('[data-report-photo]');
+      if(!trigger)return;
+      const photos=[...trigger.parentElement.querySelectorAll('img')].map(img=>({src:img.src,name:img.alt}));
+      window.QcInspectionSummary.openPhoto(null,photos,Number(trigger.dataset.reportPhoto),null,trigger);
+    };
   }
   button.onclick=()=>{period=periodKey;selected[period]=kind;reload=refresh;opener=button;openBook();};
   const ticket=++requestId;
@@ -1253,13 +1268,14 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){finishFill
      name=annual?(window.__QC_NEXUS.factoryLabel || window.getCompanyName?.() || '')+filters.year+'年验货统计表.xlsx':'每日验货情况统计表_'+date+'.xlsx';
     }else{
       const issue=kind==='issues'||kind==='annual-issues';
+      const range=scope.has('endDate')?{endDate:scope.get('endDate')}:{};
       let sourceRevision=book.sourceRevision;
       if(issue&&book.recordWrites){
-        const fresh=await api('issue-reports',new URLSearchParams({date,period,customer}));
+        const fresh=await api('issue-reports',new URLSearchParams({date,period,customer,...range}));
         if(fresh.workbookSourceRevision!==book.workbookSourceRevision)throw Error('审核来源已变化，请重新打开工作簿后导出');
         sourceRevision=fresh.sourceRevision;
       }
-       const payload={date,customer,sourceRevision,hideEmptyCols,...(issue?{period,photoQuality:'preview',allowPreviewFallback:false}:{template:kind,versions:book.versions})};
+       const payload={date,customer,sourceRevision,hideEmptyCols,...(issue?{period,...range,photoQuality:'preview',allowPreviewFallback:false}:{template:kind,versions:book.versions})};
      const result=await api((issue?'issue-reports':period+'-templates')+'/excel','',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
      if(!/^api\/(weekly|monthly)-templates\/excel\/[a-zA-Z0-9.-]+$/.test(result.url))throw Error('下载地址无效');
       url=result.url;name=result.filename;

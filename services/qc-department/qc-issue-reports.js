@@ -2,12 +2,16 @@
 (function(root){
   'use strict';
   const doc=root.document,esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const photoSrc=(row,photo)=>row.revision!=null
+    ? 'api/report-workbook/photo?'+new URLSearchParams({entry:row.id,revision:row.revision,photo:photo.id})
+    : 'api/inspection-sheet/entries/'+encodeURIComponent(row.id)+'/photos/'+encodeURIComponent(photo.id);
   let dialog=null, closeCurrent=null, exportCurrent=null, isBusy=()=>false;
   async function open(period,date,initialCustomer='',options={}){
     if(!root.__QC_NEXUS?.factory)return;
     closeCurrent?.();
     const trigger=doc.activeElement;
     const inline=!!options.host;
+    const range=period==='weekly'&&options.endDate?{endDate:options.endDate}:{};
     const pageMode=!inline&&(period==='weekly'||period==='yearly');
     const parent=doc.getElementById(period==='weekly'?'page-weekly':'page-analysis');
     const host=parent?.querySelector('.page-inner');
@@ -45,7 +49,7 @@
     }
     function draw(){
       if(!data)return;
-      q('h2').textContent=data.title;q('[data-period]').textContent=data.dateFrom+' 至 '+data.dateTo+(period==='weekly'?'（周一至周日）':'')+' · '+data.total+' 条已审核记录';
+      q('h2').textContent=data.title;q('[data-period]').textContent=data.dateFrom+' 至 '+data.dateTo+(period==='weekly'&&!range.endDate?'（周一至周日）':'')+' · '+data.total+' 条已审核记录';
       const rows=data.tables.issues.slice(page*30,(page+1)*30);
       q('[data-page]').textContent=data.total+' 条 · '+(page+1)+' / '+Math.max(1,Math.ceil(data.total/30));
       q('[data-prev]').disabled=page===0;q('[data-next]').disabled=(page+1)*30>=data.total;
@@ -54,7 +58,10 @@
       if(inline&&period==='yearly'&&root.QcReportWorkbook?.mount('yearly','annual-issues',q('[data-table]'),{rows,inspectionTotal:options.inspectionTotal},load))return;
       const {headers,widths,groups}=data;
       const band=groups.map(([count,label])=>'<th scope="colgroup" colspan="'+count+'"><span>'+esc(label)+'</span></th>').join('');
-      const photos=r=>'<div class="qir-photos qmt-photos">'+r.photos.map(p=>'<button class="qir-photo qmt-photo" data-src="api/inspection-sheet/entries/'+encodeURIComponent(r.id)+'/photos/'+encodeURIComponent(p.id)+'" aria-label="查看'+esc(p.name)+'"><img loading="lazy" src="api/inspection-sheet/entries/'+encodeURIComponent(r.id)+'/photos/'+encodeURIComponent(p.id)+'" alt="'+esc(p.name)+'"></button>').join('')+'</div>';
+      const photos=row=>'<div class="qir-photos qmt-photos">'+row.photos.map(photo=>{
+        const src=esc(photoSrc(row,photo)),name=esc(photo.name);
+        return `<button class="qir-photo qmt-photo" data-src="${src}" aria-label="查看${name}"><img loading="lazy" src="${src}" alt="${name}"></button>`;
+      }).join('')+'</div>';
       q('[data-table]').innerHTML='<table data-qmt-table="tracking" style="min-width:'+widths.reduce((a,b)=>a+b,0)+'px"><colgroup>'+widths.map(w=>'<col style="width:'+w+'px">').join('')+'</colgroup><thead><tr class="qmt-groups">'+band+'</tr><tr>'+headers.map(h=>'<th scope="col">'+esc(h)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+r.values.map((v,i)=>'<td>'+(i===12?photos(r):'<span>'+esc(v)+'</span>')+'</td>').join('')+'</tr>').join('')+'</tbody></table>';
       el.querySelectorAll('.qir-photo').forEach(button=>button.onclick=()=>{
         photoDialog?.remove();const modal=doc.createElement('dialog');photoDialog=modal;modal.className='qmt-photo-dialog';
@@ -66,7 +73,7 @@
     async function load(first=false){
       if(busy)return;const token=++generation;data=null;q('[data-export]').disabled=true;status.textContent='正在读取…';status.className='';q('[data-table]').innerHTML='';q('[data-page]').textContent='';q('[data-prev]').disabled=true;q('[data-next]').disabled=true;
       try{
-        const result=await request('api/issue-reports?'+new URLSearchParams({period,date,customer:first&&!options.sharedCustomer?'':customer()}));
+        const result=await request('api/issue-reports?'+new URLSearchParams({period,date,...range,customer:first&&!options.sharedCustomer?'':customer()}));
         if(token!==generation||!el.isConnected)return;
         if(options.sharedCustomer && !customer()) options.onCustomers?.(result.customers);
         if(first && !options.sharedCustomer){customers=result.customers||[];q('[data-customer]').innerHTML='<option value="">全部客户</option>'+customers.map(c=>'<option value="'+esc(c.key)+'">'+esc(c.label)+'</option>').join('');
@@ -76,7 +83,7 @@
           const mount=inspectionTotal=>root.QcReportWorkbook?.mount('weekly','issues',q('[data-table]'),{...result,inspectionTotal},()=>load());
           if(mount()){
             q('footer').hidden=true;
-            if(result.total===0&&root.QcEmptyState){
+            if(result.total===0&&root.QcEmptyState&&!range.endDate){
               // Keep the problem report available while checking for other inspections in this scope.
               const customer=result.customer||'';
               const scope=new URLSearchParams({date:result.date,period,customer});
@@ -108,7 +115,7 @@
       busy=true;options.onBusy?.(true);el.querySelectorAll('.qir-controls select,.qir-controls input,[data-refresh]').forEach(n=>n.disabled=true);draw();status.className='';status.textContent='正在生成 Excel…返回或关闭可取消等待';
       try{
         const on=root.QcExportColumns.enabled('issues');
-        const result=await request('api/issue-reports/excel',{period,date,customer:customer(),sourceRevision:data.sourceRevision,photoQuality:'preview',allowPreviewFallback:false,hideEmptyCols:on});
+        const result=await request('api/issue-reports/excel',{period,date,...range,customer:customer(),sourceRevision:data.sourceRevision,photoQuality:'preview',allowPreviewFallback:false,hideEmptyCols:on});
         if(!el.isConnected)return;
         if(!/^api\/monthly-templates\/excel\/[a-zA-Z0-9.-]+$/.test(result.url))throw Error('下载地址无效');
         if(!await root.QcExportColumns.downloadTicket(result,()=>el.isConnected))return;
