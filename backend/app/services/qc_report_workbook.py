@@ -132,7 +132,7 @@ def resident_render(executable, source):
     return False
 
 
-def projection(factory, kind, day, customer, result='FAIL', *, write_entry=None):
+def projection(factory, kind, day, customer, result='FAIL', *, write_entry=None, end_date=None):
     if kind in ANNUAL_KINDS:
         factory_label(factory)
         start, _ = qc_issue_reports.bounds(day, 'yearly')
@@ -146,7 +146,7 @@ def projection(factory, kind, day, customer, result='FAIL', *, write_entry=None)
     if kind == 'detail':
         return weekly.query(factory, day, customer)
     if kind == 'issues':
-        return qc_issue_reports.query(factory, day, 'weekly', customer, workbook_preview=True, write_entry=write_entry)
+        return qc_issue_reports.query(factory, day, 'weekly', customer, workbook_preview=True, write_entry=write_entry, end_date=end_date)
     return monthly.query(factory, day, customer, design_id=kind)
 
 
@@ -213,7 +213,7 @@ def editor_type(field):
     return 'number' if field.endswith(':quantity') else 'text'
 
 
-def save_record(factory, actor, kind, day, customer, result, body):
+def save_record(factory, actor, kind, day, customer, result, body, *, end_date=None):
     """Authorize the current logical cell, never arbitrary spreadsheet coordinates."""
     expected = {'customerKey', 'field', 'value', 'baseVersion', 'writeRevision', 'requestKey'}
     if kind not in RECORD_KINDS or not isinstance(body, dict) or set(body) != expected:
@@ -235,9 +235,12 @@ def save_record(factory, actor, kind, day, customer, result, body):
             raise HTTPException(422, '数量须为空白或非负数字，最多四位小数')
         if field[2] == 'correctiveCompletion' and value not in ('整改中', '待复核', '已复核'):
             raise HTTPException(422, '请选择有效的整改完成情况')
-    fingerprint = sha256(dump([kind, day, customer, result, body]).encode()).hexdigest()
+    scope = [kind, day, customer, result, body]
+    if end_date is not None:
+        scope.append(end_date)
+    fingerprint = sha256(dump(scope).encode()).hexdigest()
     actor_id = str(actor['id'])
-    data = projection(factory, kind, day, customer, result, write_entry=field[1])
+    data = projection(factory, kind, day, customer, result, write_entry=field[1], end_date=end_date)
     if kind == 'annual-stats' and (data['filters']['year'] != day[:4] or data['filters']['customer'] != customer
                                    or data['excluded'].get('missingProjection') or data['excluded'].get('invalidLineage')):
         raise HTTPException(409, '年报来源或筛选范围已变化，请刷新后补录')
@@ -406,10 +409,10 @@ def cached_preview(key):
     return None
 
 
-def preview(factory, kind, day, customer, can_edit, result='FAIL'):
+def preview(factory, kind, day, customer, can_edit, result='FAIL', *, end_date=None):
     if kind not in KINDS:
         raise HTTPException(404, '模板不存在')
-    data = projection(factory, kind, day, customer, result)
+    data = projection(factory, kind, day, customer, result, end_date=end_date)
     writable = writable_cells(kind, data)
     if kind == 'annual-stats' and (data['filters']['year'] != day[:4] or data['filters']['customer'] != customer
                                    or data['excluded'].get('missingProjection') or data['excluded'].get('invalidLineage')):

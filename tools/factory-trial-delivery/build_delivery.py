@@ -294,7 +294,7 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
         raise ValueError('专客包必须选择对应厂区及唯一客户')
     if legacy_windows and not (single_customer or huaxing_customer or selected == ['huakang-b'] or (green_toys_only and selected == ['huakang-a'])):
         raise ValueError('Windows 7兼容构建需选择已验证的专客模式。')
-    if huaxing_customer and (selected != ['huaxing'] or huaxing_customer not in {'caixing','edu','dickie'}):
+    if huaxing_customer and (selected != ['huaxing'] or huaxing_customer not in {'caixing','edu','dickie','seasons'}):
         raise ValueError('华兴专客包需指定华兴及一个支持客户')
     if green_toys_only and selected != ['huakang-a']:
         raise ValueError('Green Toys专用包必须只选择华康A。')
@@ -326,7 +326,7 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
                     folder = ('HuakangA' if factory == 'huakang-a' else 'Huaxing') + '_ZURU_Trial'
                 zip_name = f'{name}_{customers}' + ('_Win7_Win10_32及64位' if legacy_windows else '')
             if huaxing_customer:
-                customers = {'caixing':'彩星','edu':'EDU','dickie':'Dickie'}[huaxing_customer]
+                customers = {'caixing':'彩星','edu':'EDU','dickie':'Dickie','seasons':'施信'}[huaxing_customer]
                 zip_name, folder = f'05_华兴_{customers}_订单入排期', f'Huaxing_{huaxing_customer}_Trial'
                 if legacy_windows:
                     zip_name = f'华兴_{customers}_Win7_Win10_32及64位'
@@ -387,6 +387,8 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
             if huaxing_customer:
                 instructions = instructions.replace(FACTORIES[factory][3], customers)
                 instructions += f'\n本包仅开放华兴{customers}，直接复用GitHub订单中心页面；请使用该客户自己的排期。\n'
+                if huaxing_customer == 'seasons':
+                    instructions += '施信预备单写入“预备单”区；正式PO有明确QF号和同货号时关联扣数，QF与正式单上下相邻。重复导入不重复扣数。无法唯一关联时提醒并保留，来源版本冲突另列ITEM待补资料、不计入三表合计。原价未提供时留空；排期内人工填写的价格保留。\n'
             if factory == 'huadeng' and not single_customer:
                 instructions += '\n本包直接复用GitHub订单中心导入、预览、台账和排期页面，开放华登五客；资料提醒不要求填写放行原因。\nJakks原单Line#区分分批，完全相同历史批次不重复追加。取消通知保留原始数量证据，订单类型标为取消单。\n'
             if single_customer:
@@ -481,7 +483,7 @@ def build(cache: Path, output: Path, selected, release_date: str | None = None,
                 customers = SINGLE_CUSTOMERS[single_customer][1]
                 filename = f'{name}_{customers}' + ('_Win7_Win10_32及64位' if legacy_windows else '')
             if huaxing_customer:
-                customers = {'caixing':'彩星','edu':'EDU','dickie':'Dickie'}[huaxing_customer]
+                customers = {'caixing':'彩星','edu':'EDU','dickie':'Dickie','seasons':'施信'}[huaxing_customer]
                 filename = f'05_华兴_{customers}_订单入排期'
                 if legacy_windows:
                     filename = f'华兴_{customers}_Win7_Win10_32及64位'
@@ -507,7 +509,7 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--factory', action='append', choices=FACTORIES)
     parser.add_argument('--release-date', help='Release date YYYY-MM-DD; defaults to the Shanghai calendar date.')
-    parser.add_argument('--huaxing-customer', choices=['caixing','edu','dickie'])
+    parser.add_argument('--huaxing-customer', choices=['caixing','edu','dickie','seasons'])
     parser.add_argument('--jp-schedule', type=Path, help='Explicit private initial JP schedule XLSX; shipped only in the B ZIP.')
     parser.add_argument('--jp-price', type=Path, help='Explicit private initial JP price XLSX; requires --jp-schedule.')
     parser.add_argument('--green-toys-only', action='store_true', help='Huakang A Green Toys only; reuse the GitHub order workspace frontend.')

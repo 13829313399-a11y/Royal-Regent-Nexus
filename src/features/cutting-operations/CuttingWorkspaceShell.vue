@@ -8,7 +8,7 @@ import UsageGuideDialog from '@/components/common/UsageGuideDialog.vue'
 import { Button } from '@/components/ui/button'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import { cuttingGuideSteps, cuttingGuideTips } from './usageGuide'
-import { CUTTING_BASE, CUTTING_FACTORY, CUTTING_WORKSPACES, isCuttingFactory } from './navigation'
+import { CUTTING_BASE, CUTTING_FACTORY, CUTTING_WORKSPACES, CUTTING_MAIN_WORKSPACES, cuttingMainWorkspace, isCuttingFactory } from './navigation'
 import { guardCuttingFactory } from './routes'
 import { cuttingApi, type Access } from './api'
 import './workspace.css'
@@ -112,9 +112,9 @@ onBeforeUnmount(() => {
       <AccountMenu compact />
     </header>
     <nav class="cutting-rail" aria-label="裁床工作区导航">
-      <RouterLink v-for="workspace in CUTTING_WORKSPACES" :key="workspace.path"
+      <RouterLink v-for="workspace in CUTTING_MAIN_WORKSPACES" :key="workspace.path"
         :to="{ path: `${CUTTING_BASE}/${workspace.path}`, query: { factory: CUTTING_FACTORY } }"
-        :aria-label="workspace.title" :aria-current="route.path === `${CUTTING_BASE}/${workspace.path}` ? 'page' : undefined">
+        :aria-label="workspace.title" :aria-current="cuttingMainWorkspace(route.path) === workspace.path ? 'page' : undefined">
         <component :is="icons[workspace.icon]" :size="21" aria-hidden="true" />
         <span>{{ workspace.path === 'planning' ? '生产排期' : workspace.short }}</span>
       </RouterLink>

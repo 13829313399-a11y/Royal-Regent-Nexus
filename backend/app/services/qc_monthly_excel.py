@@ -60,23 +60,50 @@ def _photo(factory, entry, photo, quality='preview', allow_fallback=False, fallb
     return approved_photo(factory, entry['id'], entry['revision'], photo['id'], quality, allow_fallback, fallback_photos)[0]
 
 
+def _snapshot_annotations(conn, row):
+    raw = row['approved_snapshot']
+    if not raw:
+        # An older store can be missing the projection, but a confirm audit at
+        # exactly this revision is also frozen. Live marks cannot prove approval.
+        confirmation = conn.execute("""SELECT snapshot FROM changes
+            WHERE entry_id=? AND revision=? AND action='confirm' ORDER BY id DESC LIMIT 1""",
+            (row['entry_id'], row['approved_revision'])).fetchone()
+        raw = confirmation['snapshot'] if confirmation else ''
+    try:
+        snapshot = json.loads(raw)
+    except (ValueError, TypeError, RecursionError):
+        snapshot = None
+    if (isinstance(snapshot, dict) and snapshot.get('id') == row['entry_id']
+            and snapshot.get('revision') == row['approved_revision'] and snapshot.get('reviewState') == 'approved'):
+        photos = snapshot.get('photos')
+        if isinstance(photos, list):
+            for photo in photos:
+                if isinstance(photo, dict) and photo.get('id') == row['id']:
+                    return photo.get('annotations')
+    raise HTTPException(409, '验货照片不在当前审核快照，请刷新核对后导出')
+
+
 def approved_photo(factory, entry_id, revision, photo_id, quality='preview', allow_fallback=False, fallback_photos=None):
     path=Path(settings.qc_department_data_dir).resolve()/'_inspection_sheet/inspections.sqlite3'
     try:
         with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)) as conn:
             conn.row_factory=sqlite3.Row
-            row=conn.execute("""SELECT p.* FROM photos p JOIN entries e ON e.id=p.entry_id
+            conn.execute('BEGIN')
+            row=conn.execute("""SELECT p.*, d.approved_snapshot, e.revision AS approved_revision
+                FROM photos p JOIN entries e ON e.id=p.entry_id
                 JOIN entry_details d ON d.entry_id=e.id WHERE e.factory=? AND e.id=? AND e.revision=?
                 AND d.review_state='approved' AND p.id=? AND p.removed=0""",
                 (factory,entry_id,revision,photo_id)).fetchone()
             if row is None:raise HTTPException(409,'验货照片或审核记录已变化，请刷新核对后导出')
+            marks=_snapshot_annotations(conn,row)
             if quality=='original' and not assets.public_metadata(conn,row['id'])['originalAvailable']:
                 if not allow_fallback:
                     raise HTTPException(409,dict(code='original_missing',message='部分照片未保留原图。请选择预览图，或明确勾选允许缺失原图的照片使用预览图。'))
                 quality='preview'
                 if fallback_photos is not None:fallback_photos.append(photo_id)
-            return assets.read(conn,row,quality)
+            content,mime=assets.read(conn,row,quality)
     except sqlite3.Error as exc:raise HTTPException(503,'验货照片读取失败，请重试') from exc
+    return assets.render_annotated(content, marks, mime=mime, quality=quality)
 
 
 def _needs_excel_conversion(image_format, orientation):

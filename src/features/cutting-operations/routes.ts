@@ -18,7 +18,11 @@ export const cuttingOperationsRoutes: RouteRecordRaw[] = [{
   beforeEnter: guardCuttingFactory,
   children: [
     { path: '', redirect: to => ({ path: `${CUTTING_BASE}/dashboard`, query: to.query }) },
-    ...CUTTING_WORKSPACES.map(workspace => ({
+    ...CUTTING_WORKSPACES.map((workspace):RouteRecordRaw => workspace.path === 'costs' ? {
+      path:workspace.path,
+      redirect:to=>({path:`${CUTTING_BASE}/closing`,query:{...to.query,view:'costs'}}),
+      meta:{...meta,title:'裁床 · 月结物料费用'},
+    } : ({
       path: workspace.path,
       component: workspace.path === 'dashboard'
         ? () => import('./CuttingDashboardPage.vue')
@@ -28,8 +32,6 @@ export const cuttingOperationsRoutes: RouteRecordRaw[] = [{
         ? () => import('./CuttingMasterPage.vue')
         : workspace.path === 'reporting'
         ? () => import('./CuttingReportingPage.vue')
-        : workspace.path === 'costs'
-        ? () => import('./CuttingCostsPage.vue')
         : workspace.path === 'closing'
         ? () => import('./CuttingClosingPage.vue')
         : workspace.path === 'planning' || workspace.path === 'materials'

@@ -1,10 +1,11 @@
 vi.mock('../workspaceApi',()=>import('./workspaceFixtures'))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
-import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
+import { createMemoryHistory, createRouter, RouterView, type RouteRecordRaw } from 'vue-router'
 import { defineComponent } from 'vue'
 import CuttingOrdersPage from '../CuttingOrdersPage.vue'
 import CuttingReportingPage from '../CuttingReportingPage.vue'
+import CuttingDashboardPage from '../CuttingDashboardPage.vue'
 import CuttingCostsPage from '../CuttingCostsPage.vue'
 import CuttingLocationNotice from '../CuttingLocationNotice.vue'
 import { cuttingApi } from '../api'
@@ -31,7 +32,7 @@ afterEach(()=>wrapper?.unmount())
 async function open(workspace:string, showProductionSummary = false){
   const path='/modules/production/cutting/'+workspace
   const component=workspace==='reporting'?CuttingReportingPage:workspace==='costs'?CuttingCostsPage:CuttingOrdersPage
-  const routes = [{path, component, props:{workspace:CUTTING_WORKSPACES.find(w=>w.path===workspace)}}]
+  const routes:RouteRecordRaw[] = [{path, component, props:{workspace:CUTTING_WORKSPACES.find(w=>w.path===workspace)}},{path:'/modules/production/cutting/dashboard',component:CuttingDashboardPage}]
   if (showProductionSummary) routes.push({path:'/modules/production/cutting/reporting', component:CuttingReportingPage, props:{workspace:undefined}})
   const router=createRouter({history:createMemoryHistory(),routes})
   await router.push(cuttingDestination(order.line_id,'2026-09',workspace));await router.isReady()

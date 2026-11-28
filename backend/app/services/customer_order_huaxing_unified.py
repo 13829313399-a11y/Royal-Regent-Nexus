@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections import Counter
 import re
 
-CUSTOMERS = {'zuru', 'buzzbee', 'dickie', 'caixing', 'edu', '360', 'yinhui', 'disney', 'maxx', 'shushupapa', 'barter'}
+CUSTOMERS = {'seasons', 'zuru', 'buzzbee', 'dickie', 'caixing', 'edu', '360', 'yinhui', 'disney', 'maxx', 'shushupapa', 'barter'}
 TARGET_TEMPLATE = 'HEYUAN_BUSINESS_UNIFIED_HUAXING_V2'
 BUZZBEE_SHEETS = ('ITEM表-子弹枪', 'ITEM表-水枪', 'ITEM表-套装', 'ITEM表-公仔')
 DICKIE_EXTRA = '恐龙蛋口水车Iteam表'
@@ -269,6 +269,14 @@ def map_record(row, record, customer_code):
             row.setdefault('issues', []).append(issue)
     elif customer_code == 'disney':
         row.update(reference_no=get('po_number'), contract_no='', standard=get('standard'))
+    elif customer_code == 'seasons':
+        row.update(reference_no=get('oc_no') or get('oqf_no'), production_no=get('oqf_no'),
+                   order_type=get('document_type'), _seasons_qf=get('oqf_no'),
+                   _seasons_explicit_qf=bool(record.get('_explicit_qf')),
+                   _seasons_source_difference=bool(record.get('_advisory_source_difference')),
+                   product_name_en=get('english_name'))
+        if record.get('unit_price') is None:
+            row.update(unit_price_hkd='', amount_hkd='')
     elif customer_code in {'maxx', 'shushupapa', 'barter'}:
         row.update(reference_no=get('po_number'), packaging=get('color_box'), standard=get('standard'),
                    units_per_carton=outer_pack(get('outer_pack')))
@@ -290,6 +298,8 @@ def map_record(row, record, customer_code):
 def prepare_row(row, history, customer_code, available_sheets, factory_id='huaxing'):
     from app.services.customer_order_unified import _key, _text, _issue
     row['_huaxing_customer'] = customer_code
+    if customer_code == 'seasons' and factory_id == 'huaxing' and not re.search(r'[\u3400-\u9fff]', row.get('product_name_zh', '')):
+        row['product_name_zh'] = ''
     if customer_code == 'edu':
         from app.services.huaxing_order_legacy.edu_schedule import full_edu_item
         row['product_no'] = full_edu_item(row.get('product_no'), row.get('source_product_no'))
@@ -510,6 +520,9 @@ def export_advisory_rows(workbook, rows, message):
 
 def export_rows(workbook, rows):
     from app.services import customer_order_unified as unified
+    if rows and all(row.get('_huaxing_customer') == 'seasons' for row in rows):
+        from .customer_order_seasons_layout import export_rows as export_seasons
+        return export_seasons(workbook, rows)
     if rows and all(row.get('_huaxing_customer') == 'yinhui' for row in rows):
         from .customer_order_yinhui_unified import export_rows as export_yinhui
         return export_yinhui(workbook, rows)

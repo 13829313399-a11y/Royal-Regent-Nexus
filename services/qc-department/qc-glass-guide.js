@@ -138,7 +138,7 @@
     let fallbackTimer = null;
 
     function position() {
-      if (!rootEl.isConnected) return;
+      if (!rootEl.isConnected || (mobile && doc.visibilityState === 'hidden')) return;
       const hostRect = host.getBoundingClientRect();
       const anchorRect = anchor.getBoundingClientRect();
       if (!hostRect.width || !anchorRect.width) return;
@@ -148,6 +148,7 @@
         const bodyW0 = Math.ceil(copyEl.offsetWidth || 256);
         const imgRect = img ? img.getBoundingClientRect() : null;
         const hasPhoto = Boolean(imgRect && imgRect.height > 20);
+        if (mobile && img && !img.naturalWidth) return;
         if (img && !hasPhoto && !photoFallback && root.ResizeObserver) return;
         const gap = hasPhoto ? imgRect.top - anchorRect.bottom : 999;
         const toolbarRight = anchorRect.right - hostRect.left;
@@ -155,8 +156,11 @@
         const canSitBeside = toolbarRight + 6 + NECK + bodyW0 + 10 <= hostRect.width;
         const fitsBelow = gap >= bodyH + NECK + 8;
         const beside = !fitsBelow && canSitBeside;
-        rootEl.classList.toggle('qc-guide-no-room', !fitsBelow && !beside);
-        if (!fitsBelow && !beside) return;
+        // On a narrow phone use the original floating hint below the tools.
+        // Its layer ignores touch and does not take space away from the image.
+        const noRoom = !mobile && !fitsBelow && !beside;
+        rootEl.classList.toggle('qc-guide-no-room', noRoom);
+        if (noRoom) return;
 
         if (beside !== lastBeside) {
           lastBeside = beside;
@@ -195,8 +199,6 @@
         const table = host.querySelector('#reviewTableWrap')?.getBoundingClientRect();
         const needsGap = table?.height && hostRect.top + top + bodyH + NECK + 4 > table.top;
         const gap = needsGap ? reviewToolbarGap(controls, hostRect, anchorRect, bodyW + NECK, bodyH) : null;
-        rootEl.classList.toggle('qc-guide-no-room', needsGap && !gap || bodyW > hostRect.width - 16);
-        if (rootEl.classList.contains('qc-guide-no-room')) return;
         const neckPos = gap ? bodyH / 2 : clamp(ax - left, 26, Math.max(26, bodyW - 26));
         applyBalloonGeometry(balloon, {side: gap ? 'right' : 'top', bodyW, bodyH, neckPos});
         balloon.style.left = `${Math.round(gap?.left ?? left)}px`;
@@ -220,6 +222,7 @@
     position();
     schedulePosition();
     img?.addEventListener('load', schedulePosition);
+    if (mobile) doc.addEventListener('visibilitychange', schedulePosition);
     const observer = root.ResizeObserver ? new root.ResizeObserver(position) : null;
     observer?.observe(host);
     observer?.observe(anchor);
@@ -230,6 +233,7 @@
       root.clearTimeout(fallbackTimer);
       observer?.disconnect();
       img?.removeEventListener('load', schedulePosition);
+      if (mobile) doc.removeEventListener('visibilitychange', schedulePosition);
     };
   }
 
@@ -305,7 +309,7 @@
     }
 
     const stopFollow = followAnchor(host, bar, {mode, anchor, controls, mobile, onPlace: startLifecycle});
-    if (!root.ResizeObserver) startLifecycle();
+    if (!root.ResizeObserver && !mobile) startLifecycle();
 
     function destroy() {
       root.clearTimeout(timer);
@@ -334,7 +338,7 @@
   function photo(toolbar, {actor, mobile = false} = {}) {
     if (!actor || !toolbar?.parentElement) return null;
     const memory = photoMemory(actor);
-    if (memory.complete || (memory.count || 0) >= 2) return null;
+    if (!mobile && (memory.complete || (memory.count || 0) >= 2)) return null;
     const pulse = [
       toolbar.querySelector('[data-mark-tool="arrow"]'),
       toolbar.querySelector('[data-mark-tool="circle"]'),
@@ -345,7 +349,7 @@
       anchor: toolbar,
       mobile,
       pulse,
-      onShown: () => rememberPhoto(actor, {count: (memory.count || 0) + 1}),
+      onShown: mobile ? undefined : () => rememberPhoto(actor, {count: (memory.count || 0) + 1}),
       copy: photoCopy(mobile, false),
     });
   }

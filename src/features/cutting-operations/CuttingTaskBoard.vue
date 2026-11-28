@@ -7,10 +7,11 @@ import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
 import CuttingMetrics from './CuttingMetrics.vue'
 import CuttingSubnav from './CuttingSubnav.vue'
+import CuttingVisualCard from './CuttingVisualCard.vue'
 import { workspaceApi,businessDay,type TaskView } from './workspaceApi'
 import { errorMessage } from './api'
 import { cuttingDestination, cuttingQueryDay, reportingTaskFilters, sameTaskFilters, type TaskFilters } from './location'
-const props=defineProps<{reporting?:boolean}>()
+const props=defineProps<{reporting?:boolean;cards?:boolean}>()
 const emit=defineEmits<{ 'loaded-query': [filters: TaskFilters, lineId: unknown] }>()
 const filterId=`cutting-tasks-${useId()}`
 const route=inject(routeLocationKey,undefined)
@@ -47,6 +48,11 @@ const metrics=computed(()=>{const s=result.value?.stats;return props.reporting?[
   {label:'已交接',value:s?.handed??'—',unit:'套'},
 ]})
 const exceptionPreview=computed(()=>result.value?.data.filter(row=>row.reasons.length).slice(0,3)??[])
+function quickDestination(row:TaskView['data'][number]){
+  const date=result.value?.day??day.value
+  const target=cuttingDestination(row.line_id,date.slice(0,7),'reporting',row.daily_document_id?'report':'task',row.daily_document_id??row.task_id)
+  return {...target,query:{...target.query,day:date,task_day:date,quick_report:'1',quick_reported:row.reported?'1':undefined}}
+}
 function exceptionLink(row:TaskView['data'][number],reason:string) {
   const date=result.value?.day??day.value
   const isReport=reason==='外发收回待验收'||reason==='已结束业务日未填报'
@@ -141,7 +147,7 @@ onBeforeUnmount(()=>{alive=false;generation++;for(const cleanup of retryFocusCle
 watchCuttingWorkspace(()=>void load())
 </script>
 <template>
-  <div class="cutting-overview">
+  <div class="cutting-overview" :class="{'cutting-task-cards':cards}">
     <div class="cutting-review-filters">
       <form class="order-toolbar" @submit.prevent="queryTasks">
         <label :for="`${filterId}-day`">业务日期<input :id="`${filterId}-day`" v-model="day" name="day" type="date" required /></label>
@@ -151,10 +157,11 @@ watchCuttingWorkspace(()=>void load())
         <Button type="button" variant="outline" :disabled="busy" @click="load()">刷新当前结果</Button>
         <Button type="button" variant="outline" :disabled="busy" @click="resetFilters">清除订单／执行方筛选</Button>
       </form>
-      <p v-if="applied" class="cutting-muted">上次成功查询：{{targetLabel(applied)}}。</p>
+      <p v-if="applied" class="cutting-muted">上次成功查询：{{cards?`${applied.day} · ${applied.q||'全部订单'} · ${viewLabel(applied.scope)}`:targetLabel(applied)}}。</p>
       <p v-if="unapplied" class="cutting-muted" role="status">{{failedQuery?'当前输入尚未成功应用。':'筛选有未查询的修改。'}}切换任务视图、翻页及刷新沿用已应用筛选。</p>
     </div>
-    <CuttingMetrics :items="metrics" />
+    <div v-if="cards" class="cutting-task-summary"><span>当日计划 <strong>{{result?.stats.planned??'—'}}</strong> 套</span><span>合格 <strong>{{result?.stats.completed??'—'}}</strong> 套</span><span>已报 <strong>{{result?.stats.reported??'—'}}／{{result?.stats.tasks??'—'}}</strong> 项</span></div>
+    <CuttingMetrics v-else :items="metrics" />
     <SectionPanel v-if="!reporting && result" title="异常任务" :subtitle="`${result.day} · ${result.stats.abnormal} 项待处理，同一任务仅计一次`" class="cutting-content-panel cutting-exception-panel">
       <template v-if="result.stats.abnormal && scope!=='abnormal'" #action>
         <Button variant="outline" @click="change('abnormal')">查看全部异常</Button>
@@ -173,7 +180,9 @@ watchCuttingWorkspace(()=>void load())
         </ul>
       </template>
     </SectionPanel>
-    <SectionPanel :title="reporting?'当日任务':'生产任务列表'" class="cutting-content-panel">
+    <component :is="cards?'section':SectionPanel" :title="cards?undefined:reporting?'当日任务':'生产任务列表'" class="cutting-content-panel" :class="{'cutting-task-list-flat':cards}">
+      <h2 v-if="cards" class="cutting-task-list-title">当日任务</h2>
+      <div v-if="cards&&reporting&&result?.stats.order_changes"><slot name="order-changes" :count="result.stats.order_changes" :query="applied?.q??''" /></div>
       <template v-if="reporting && result?.stats.order_changes" #action>
         <slot name="order-changes" :count="result.stats.order_changes" :query="applied?.q??''" />
       </template>
@@ -185,8 +194,17 @@ watchCuttingWorkspace(()=>void load())
         <Button v-if="failedQuery" :id="retryButtonId" type="button" variant="outline" :aria-disabled="busy" @click="retry">按原条件重试（第 {{readingTarget?.page??failedQuery.page}} 页）</Button>
       </div>
       <p v-if="failedQuery&&!busy" class="cutting-muted">重试目标：{{targetLabel(failedQuery)}}。保留尚未查询的新输入，重试不提交业务记录。</p>
-      <p class="cutting-muted">应报任务以当日有效发布日计划为准；外厂自报不计合格完成。实收条件待核定不直接判为缺料。</p>
-      <div class="cutting-table-scroll" tabindex="0" role="region" aria-label="生产任务列表"><table>
+      <details v-if="cards" class="cutting-task-definition"><summary>统计口径</summary><p class="cutting-muted">应报任务以当日有效发布日计划为准；外厂自报不计合格完成。实收条件待核定不直接判为缺料。</p></details>
+      <p v-else class="cutting-muted">应报任务以当日有效发布日计划为准；外厂自报不计合格完成。实收条件待核定不直接判为缺料。</p>
+      <div v-if="cards" class="cutting-visual-grid">
+        <CuttingVisualCard v-for="row in result?.data" :key="row.line_id+row.task_id" :title="row.task_name" :eyebrow="`${row.order_no} · ${row.customer} · ${row.item_no}`" :status="row.reasons.length?row.reasons.join(' · '):row.reported?'已填报':'待填报'" :value="row.day_completed+' / '+row.planned" unit="套 · 当日合格／计划" :progress="row.planned>0?row.day_completed/row.planned*100:undefined" :to="{...cuttingDestination(row.line_id,(result?.day??day).slice(0,7),'reporting','task',row.task_id),query:{...cuttingDestination(row.line_id,(result?.day??day).slice(0,7),'reporting','task',row.task_id).query,day:result?.day??day,task_day:result?.day??day}}">
+          <p>{{row.resource_name}} · {{row.execution==='internal'?'本厂':'外发'}} · 累计完成 {{row.completed}}／{{row.target_sets}} 套</p>
+          <p class="cutting-muted">当日已交接 {{row.day_handed}} 套<span v-if="row.execution==='outsourced'"> · 收回 {{row.returned}}／验收 {{row.accepted}} 套</span></p>
+          <template #headingAction><RouterLink class="cutting-card-action" :to="quickDestination(row)">填数／办理</RouterLink></template>
+          <p v-if="row.reasons.length" class="cutting-muted">{{row.reasons.join(' · ')}}</p>
+        </CuttingVisualCard>
+      </div>
+      <div v-else class="cutting-table-scroll" tabindex="0" role="region" aria-label="生产任务列表"><table>
         <thead><tr><th>客户／订单</th><th>货号／任务</th><th>执行方</th><th>当日计划</th><th>合格完成</th><th>已交接</th><th>填报状态</th><th>异常与核对</th><th>操作</th></tr></thead>
         <tbody><tr v-for="row in result?.data" :key="row.line_id+row.task_id">
           <td>{{row.customer}}<br />{{row.order_no}}</td><td>{{row.item_no}}<br />{{row.task_name}}</td>
@@ -202,7 +220,7 @@ watchCuttingWorkspace(()=>void load())
       </table></div>
       <p v-if="result&&!result.total" class="cutting-no-records">当前筛选范围暂无任务。</p>
       <nav v-if="result" class="order-pagination" aria-label="生产任务分页"><span ref="resultPager" tabindex="-1" aria-live="polite" class="task-result-page">第 {{result.page}} 页 · 共 {{result.total}} 项</span><Button variant="outline" :disabled="busy||result.page<=1" @click="load(result.page-1)">上一页</Button><Button variant="outline" :disabled="busy||result.page*50>=result.total" @click="load(result.page+1)">下一页</Button></nav>
-    </SectionPanel>
+    </component>
   </div>
 </template>
 <style scoped>

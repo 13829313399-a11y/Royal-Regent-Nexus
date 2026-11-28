@@ -98,6 +98,19 @@ def scheduling(db, q='', status='', bucket='', page=1, plan_status=''):
                 page=page, page_size=50, stats=stats)
 
 
+def daily_document(docs, task_id, date):
+    draft_id = None
+    for document_id, document in docs.items():
+        for kind in ('posted', 'draft'):
+            event = document.get(kind)
+            entry = event['data']['entry'] if event else {}
+            if entry.get('kind') == 'daily' and entry.get('task_id') == task_id and entry.get('day') == date:
+                if kind == 'posted':
+                    return document_id
+                draft_id = document_id
+    return draft_id
+
+
 def task_board(db, day, q='', execution='', scope='daily', page=1):
     c.require(reporting.schema_ready(db.connection()), '每日填数依据尚未就绪', 503)
     lock_transaction(db, 'cutting-master', c.FACTORY)
@@ -132,6 +145,9 @@ def task_board(db, day, q='', execution='', scope='daily', page=1):
             effective = [d['posted'] for d in docs.values() if d['posted'] and
                 d['posted']['data']['entry']['task_id'] == task_id and d['posted']['data']['entry']['day'] == date]
             reported = any(e['data']['entry']['kind'] == 'daily' for e in effective)
+            # Pin the exact original document so a long history cannot turn a
+            # quick correction into a second daily report on page one.
+            daily_document_id = daily_document(docs, task_id, date)
             due = max((d['day'] for d in days), default='')
             reasons = []
             if task and summary['published_stale']:
@@ -149,7 +165,7 @@ def task_board(db, day, q='', execution='', scope='daily', page=1):
             all_rows.append(dict(**order_identity(dispatch), task_id=task_id,
                 task_name=task['name'] if task else context.get('task_name', task_id),
                 resource_name=context.get('resource_name') or (task['resource']['data']['name'] if task else ''),
-                execution=executor, planned=planned, reported=reported, has_fact=bool(effective),
+                execution=executor, planned=planned, reported=reported, has_fact=bool(effective),daily_document_id=daily_document_id,
                 day_completed=balance.get('completed', 0)-old.get('completed', 0),
                 day_handed=balance.get('handed', 0)-old.get('handed', 0),
                 completed=balance.get('completed', 0), target_sets=target,

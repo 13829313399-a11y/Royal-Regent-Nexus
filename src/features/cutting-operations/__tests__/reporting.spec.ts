@@ -38,6 +38,19 @@ beforeEach(()=>{vi.resetAllMocks();vi.spyOn(window,'confirm').mockReturnValue(fa
 afterEach(()=>{wrapper?.unmount();vi.restoreAllMocks()})
 
 describe('cutting production facts and save protection',()=>{
+  it('pins a quick correction to its original report beyond page one without opening another daily report',async()=>{
+    const original={id:'event-21',version:7,document_id:'doc-21',action:'post' as const,actor_id:'clerk',created_at:'2026-10-10',reason:'原日报',data:{entry:{task_id:'task-1',plan_version:6,day:view.as_of,mode:'sets' as const,kind:'daily' as const,sets:12,rejected:0,scrap:0,parts:[],evidence:'原凭据',exception_reason:''},context:{plan_version:6,dispatch_id:'d',bom_id:'b',bom_version:1,parts:[],task_name:'本厂任务',task_target:50,resource_id:'r',resource_name:'本厂',execution:'internal' as const,actual_review_pending:false}}}
+    vi.mocked(cuttingApi.access).mockResolvedValue({enabled:true,schema_ready:true,orders_schema_ready:true,reporting_schema_ready:true,permissions:['read','report_write']})
+    vi.mocked(ordersApi.read).mockResolvedValue(order)
+    vi.mocked(reportingApi.read).mockResolvedValue({...clone(view),documents:[{document_id:'doc-21',posted:original,draft:null,review:null,voided:false,history:[original],first_version:7}],history_pagination:{page:2,page_size:20,total:21}})
+    router=createRouter({history:createMemoryHistory(),routes:cuttingOperationsRoutes})
+    await router.push(`${path}&line_id=line-1&day=${view.as_of}&focus_kind=report&focus_id=doc-21&quick_report=1&quick_reported=1`)
+    wrapper=mount(RouterView,{attachTo:document.body,global:{plugins:[router]}});await flushPromises()
+    expect(reportingApi.read).toHaveBeenCalledWith('line-1',view.as_of,1,undefined,'doc-21')
+    expect(document.querySelector<HTMLInputElement>('[role="dialog"] input[name="sets"]')?.value).toBe('12')
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('原记录 V7')
+    expect(reportingApi.command).not.toHaveBeenCalled()
+  },15000)
   it('restores the chooser selection and applied cutoff from its saved URL',async()=>{
     await open()
     expect(router.currentRoute.value.query).toMatchObject({line_id:order.line_id,day:view.as_of,task_day:'2026-10-20'})
@@ -55,6 +68,7 @@ describe('cutting production facts and save protection',()=>{
     expect(field('统计截至日期').element).toHaveProperty('value',view.as_of)
     expect(button('裁片配套').attributes('aria-pressed')).toBe('true')
     await wrapper.findAll('a').find(link=>link.text()==='返回当日任务')!.trigger('click');await flushPromises()
+    await vi.waitFor(()=>expect(router.currentRoute.value.path).toBe('/modules/production/cutting/dashboard'))
     expect(router.currentRoute.value.query).toEqual({factory:'huakang-c',day:'2026-10-20'})
     expect(wrapper.text()).toContain('当日任务')
   })
@@ -94,6 +108,7 @@ describe('cutting production facts and save protection',()=>{
     await button('裁片配套').trigger('click');await flushPromises()
     expect(field('统计截至日期').element).toHaveProperty('value',view.as_of)
     await wrapper.findAll('a').find(link=>link.text()==='返回当日任务')!.trigger('click');await flushPromises()
+    await vi.waitFor(()=>expect(router.currentRoute.value.path).toBe('/modules/production/cutting/dashboard'))
     expect(router.currentRoute.value.query).toEqual({factory:'huakang-c',day:'2026-10-20'})
   })
   it('returns an out-of-range chooser page to page one using the applied query',async()=>{

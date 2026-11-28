@@ -178,6 +178,112 @@ def test_deferred_previews_use_approved_revision_and_export_keeps_photos(db, mon
         qc_monthly_excel.approved_photo('huaxing', entry['id'], entry['revision'], ids[0])
 
 
+def test_report_photo_http_and_excel_follow_frozen_annotations(monkeypatch, tmp_path):
+    from base64 import b64encode
+    from json import dumps, loads
+    from zipfile import ZipFile
+    import test_molding_sample_api
+    from test_molding_sample_api import make_client, login_as
+    from test_qc_daily_report import DAY as report_day, EXAMPLES, isolated_upstream, seed
+    from test_qc_photo_assets import EXPORT_MARKS, neutral_photo, assert_rendered_marks
+
+    monkeypatch.setattr(test_molding_sample_api, 'TEST_TMP_DIR', tmp_path / 'main')
+    monkeypatch.setenv('QC_DEPARTMENT_DATA_DIR', str(tmp_path / 'companies'))
+    monkeypatch.setenv('AUTHZ_MODE', 'enforce')
+    with make_client(monkeypatch) as client:
+        from app.services import qc_inspection_sheet as sheet, qc_issue_reports as issues
+        from app.services import qc_monthly_excel as excel, qc_monthly_templates as templates
+        from app.services import qc_report_workbook as report
+
+        isolated_upstream(monkeypatch)
+        monkeypatch.setattr(report, 'office_executable', lambda: None)
+        health = '/api/qc-department/huaxing/api/health'
+        login_as(client, 'qc_inspector')
+        base = client.get(health).json()['frame_url'] + 'api/'
+        seed(client, base.removesuffix('api/'), EXAMPLES[1:2])
+        entry, = client.get(base + 'inspection-sheet/review/entries').json()['items']
+        eid = entry['id']
+        review_path = 'inspection-sheet/review/entries/' + eid
+
+        def post(path, **body):
+            response = client.post(base + path, json=body)
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        def review(action, revision):
+            result = post('inspection-sheet/review/' + action,
+                          entries=[dict(id=eid, revision=revision)], requestKey=uuid4().hex)
+            assert result['succeeded'] == 1, result
+            with sheet.store() as conn:
+                return sheet.get(conn, 'huaxing', eid)['revision']
+
+        revision = review('revoke', entry['revision'])
+        uploaded = post(review_path + '/photos', revision=revision, name='合成照片',
+                        content=b64encode(neutral_photo()).decode(), requestKey=uuid4().hex)
+        pid = uploaded['photos'][0]['id']
+        marked = post(review_path + '/photo-annotations', photoId=pid, annotationVersion=0,
+                      annotations=EXPORT_MARKS)['entry']
+        revision = review('confirm', marked['revision'])
+        raw = sheet.read_photo('huaxing', eid, pid)
+        path = base + 'report-workbook/photo'
+        params = dict(entry=eid, photo=pid, revision=revision)
+
+        # A nonempty frozen snapshot remains authoritative even when the live marks differ.
+        with sheet.store(True) as conn:
+            conn.execute("UPDATE photo_annotations SET annotations='[]' WHERE photo_id=?", (pid,))
+        response = client.get(path, params=params)
+        annotated, mime = excel.approved_photo('huaxing', eid, revision, pid)
+        assert response.status_code == 200 and response.headers['content-type'] == mime == 'image/jpeg'
+        assert response.content == annotated and annotated != raw
+        assert_rendered_marks(annotated)
+
+        for kind, period in [('issues', 'weekly'), ('tracking', 'monthly'), ('annual-issues', 'yearly')]:
+            preview = client.get(base + 'report-workbook', params=dict(kind=kind, day=report_day, customer=''))
+            assert preview.status_code == 200, preview.text
+            image, = html.fromstring(preview.json()['sheets'][0]['html']).xpath('.//img')
+            assert client.get(base.removesuffix('api/') + image.get('src')).content == annotated
+            data = report.projection('huaxing', kind, report_day, '')
+            rows = data['tables']['tracking' if kind == 'tracking' else 'issues']
+            assert rows[0]['photos'][0]['annotations'] == EXPORT_MARKS
+            export_kind = 'tracking' if kind == 'tracking' else 'issues'
+            with ZipFile(BytesIO(excel.render(data, export_kind, 'huaxing'))) as book:
+                assert_rendered_marks(book.read('xl/media/image1.jpeg'))
+            assert issues.query('huaxing', report_day, period)['tables']['issues'][0]['revision'] == revision
+        with ZipFile(BytesIO(excel.render(templates.query('huaxing', report_day), 'issues', 'huaxing'))) as book:
+            assert_rendered_marks(book.read('xl/media/image1.jpeg'))
+
+        # If the main snapshot is absent, recover only the same frozen
+        # confirmation from the audit. A current photo row alone proves nothing.
+        with sheet.store(True) as conn:
+            frozen = conn.execute('SELECT approved_snapshot FROM entry_details WHERE entry_id=?', (eid,)).fetchone()[0]
+            conn.execute("UPDATE entry_details SET approved_snapshot='' WHERE entry_id=?", (eid,))
+        recovered = client.get(path, params=params)
+        assert recovered.status_code == 200 and recovered.content == annotated
+        with sheet.store(True) as conn:
+            conn.execute("UPDATE changes SET snapshot='' WHERE entry_id=? AND revision=? AND action='confirm'",
+                         (eid, revision))
+        assert client.get(path, params=params).status_code == 409
+        for bad in ({**loads(frozen), 'photos': []}, {**loads(frozen), 'revision': revision-1}):
+            with sheet.store(True) as conn:
+                conn.execute('UPDATE entry_details SET approved_snapshot=? WHERE entry_id=?', (dumps(bad), eid))
+            assert client.get(path, params=params).status_code == 409
+        with sheet.store(True) as conn:
+            conn.execute('UPDATE entry_details SET approved_snapshot=? WHERE entry_id=?', (frozen, eid))
+            conn.execute("UPDATE changes SET snapshot=? WHERE entry_id=? AND revision=? AND action='confirm'",
+                         (frozen, eid, revision))
+            conn.execute('UPDATE photo_annotations SET annotations=? WHERE photo_id=?',
+                         (dumps(EXPORT_MARKS), pid))
+        review('revoke', revision)
+        assert client.get(path, params=params).status_code == 409
+        cleared = post(review_path + '/photo-annotations', photoId=pid, annotationVersion=1,
+                       annotations=[])['entry']
+        latest = review('confirm', cleared['revision'])
+        assert latest > revision
+        assert client.get(path, params=params).status_code == 409
+        updated = client.get(path, params={**params, 'revision': latest})
+        assert updated.status_code == 200 and updated.content == raw
+
+
 def save_request(cell, value, **changes):
     return {**{k:cell[k] for k in ('customerKey', 'field', 'writeRevision')},
             'value':value,'baseVersion':cell['version'],'requestKey':uuid4().hex,**changes}

@@ -26,6 +26,42 @@ def request(data, **changes):
 def test_period_bounds(day,period,expected):assert reports.bounds(day,period)==expected
 
 
+def test_photo_only_pass_is_excluded_but_documented_pass_stays_in_tracking(db):
+    from app.services import qc_inspection_sheet as sheet
+    entry = transition(issue(db, 1, photos=1), 'revoke')
+    entry = sheet.save('huaxing', entry['id'], dict(revision=entry['revision'], result='PASS',
+                       remark='', inspectionProblem=''), ACTOR, review=True)
+    transition(entry)
+    documented = issue(db, 2, photos=1)
+    for period in ('weekly','monthly','yearly'):
+        row, = reports.query('huaxing','2026-11-03',period)['tables']['issues']
+        assert row['id'] == documented['id'] and row['values'][10] == 'PASS'
+        assert len(row['photos']) == 1
+    row, = monthly.query('huaxing','2026-11-03',design_id='tracking')['tables']['tracking']
+    assert row['id'] == documented['id']
+
+
+def test_inclusive_issue_range_and_export(db,monkeypatch):
+    from app.services import qc_report_workbook as workbook
+    for day in (24,25,29,30):
+        approval(db,day,result='FAIL',actual=f'2026-11-{day}')
+    start,end='2026-11-25','2026-11-29'
+    report=reports.query('huaxing',start,'weekly',end_date=end)
+    projected=workbook.projection('huaxing','issues',start,'',end_date=end)
+    for data in (report,projected):
+        assert [row['values'][0] for row in data['tables']['issues']]==[start,end]
+    assert reports.query('huaxing',end,'weekly',end_date=end)['total']==1
+    assert reports.query('huaxing',start,'weekly',end_date='2026-12-01')['total']==3
+    for invalid in ('',start+'x','2026-11-24'):
+        with pytest.raises(HTTPException):reports.query('huaxing',start,'weekly',end_date=invalid)
+    monkeypatch.setattr(excel.settings,'qc_department_gateway_token',SecretStr('isolated-issue-token'))
+    out=reports.prepare('huaxing','owner',request(report,endDate=end))
+    raw,_=excel.download('owner',out['url'].split('/')[-1])
+    sheet=openpyxl.load_workbook(BytesIO(raw)).active
+    assert start in sheet['A3'].value and end in sheet['A3'].value
+    assert sheet.max_row==8
+
+
 def test_customer_query_supplement_scope_and_revoked_exclusion(db,monkeypatch):
     one=issue(db,1,'彩星',2);two=issue(db,2,'其他客户',1)
     data=reports.query('huaxing','2026-11-03','weekly')

@@ -62,7 +62,7 @@ def test_seasons_preview_export_use_only_current_factory_workbook(factory):
     row = preview['rows'][0]
     assert (row['reference_no'], row['po_no'], row['product_no'], row['quantity']) == (
         'ZE618957', 'MPO1609793', 'W85340', '120')
-    assert row['product_name_zh'] == 'TEST PUMPKIN'
+    assert row['product_name_zh'] == ('huaxing-产品' if factory == 'huaxing' else 'TEST PUMPKIN')
     keys = {i['skip_key'] for r in preview['rows'] for i in r['issues'] if i.get('skip_key')}
     output, _, exported = service.export_unified_customer_schedule(**args, skipped_issue_keys=keys)
     assert exported['factory_id'] == factory
@@ -71,7 +71,7 @@ def test_seasons_preview_export_use_only_current_factory_workbook(factory):
     assert wb['ITEM表']['E5'].value == 'ZE618957'
     assert wb['ITEM表']['F5'].value == 'MPO1609793'
     assert wb['ITEM表']['I4'].value == factory + '-产品'
-    assert wb['ITEM表']['I5'].value == 'TEST PUMPKIN'
+    assert wb['ITEM表']['I5'].value == ('huaxing-产品' if factory == 'huaxing' else 'TEST PUMPKIN')
     assert wb['ITEM表']['K5'].value == 120
     assert wb['ITEM表']['K9'].value is None
     if factory == 'huakang-d':

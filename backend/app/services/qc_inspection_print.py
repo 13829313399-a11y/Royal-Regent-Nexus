@@ -37,12 +37,20 @@ MAX_PAGES = 60
 PDF_RENDER_LOCK = Lock()
 
 
-def export_photo(content):
+def export_photo(content, annotations=None):
+    marks = journal.photo_assets.valid_annotations(annotations)
+    if marks:
+        content, _ = journal.photo_assets.render_annotated(
+            content, marks, mime='image/jpeg', quality='preview')
     with Image.open(BytesIO(content)) as original:
         thumb = ImageOps.exif_transpose(original)
         thumb.thumbnail((480, 480))
         buffer = BytesIO()
-        thumb.convert('RGB').save(buffer, 'JPEG', quality=85)
+        photo = thumb.convert('RGB')
+        if marks:
+            photo.save(buffer, 'JPEG', quality=85, subsampling=0)
+        else:
+            photo.save(buffer, 'JPEG', quality=85)
         return buffer.getvalue()
 
 
@@ -72,17 +80,23 @@ def saved_records(factory, entries):
         if len(journal.workbench_items(saved)) != len(saved):
             raise HTTPException(409, '部分记录已离开验货台，请刷新后重新选择')
         # Keep evidence and text on the same checked revision, even during concurrent edits.
+        photos_sql = journal.photo_assets.entry_photos_sql(connection)
         for record in saved:
-            pictures = connection.execute(
-                'SELECT * FROM photos WHERE entry_id=? AND removed=0 ORDER BY created_at,id',
-                (record['id'],))
+            pictures = connection.execute(photos_sql, (record['id'],))
+            source_digests = []
+            has_marks = False
             for photo in pictures:
                 content, _ = journal.photo_assets.read(connection, photo, 'preview')
-                data = export_photo(content)
+                marks = journal.photo_assets.decode_annotations(photo['annotations'])
+                data = export_photo(content, marks)
+                source_digests.append(photo['digest'])
+                has_marks = has_marks or bool(marks)
                 image_bytes += len(data)
                 if image_bytes > 32 * 1024 * 1024:
                     raise HTTPException(422, '所选照片总量过大，请分批选择记录')
                 record['photos'].append(data)
+            if has_marks:
+                record['annotatedPhotoSource'] = source_digests
     return saved
 
 

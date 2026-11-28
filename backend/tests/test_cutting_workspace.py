@@ -197,11 +197,19 @@ def test_board_zero_report_draft_external_claim_and_outstanding(production):
     assert initial['stats']['reported']==0
     ok(send(p,'save',sets=0))
     assert get(p,'tasks',day=day)['stats']['reported']==0
+    draft_row=next(r for r in get(p,'tasks',day=day)['data'] if r['task_id']=='task-1')
+    assert draft_row['daily_document_id']
     # A separate effective zero is still a report, and an external claim is not completion.
     ok(send(p,sets=0))
     ok(send(p,task_id='external',sets=10))
     result=get(p,'tasks',day=day)
     assert result['stats']['reported']==2 and result['stats']['unreported']==0
+    for row in result['data']:
+        assert row['daily_document_id']
+        focused=p.get(BASE+'/orders/line-1/reports',params={'factory_id':'huakang-c','as_of':day,'history_page':1,'history_document_id':row['daily_document_id']})
+        assert focused.status_code==200
+        assert any(d['document_id']==row['daily_document_id'] for d in focused.json()['documents'])
+        assert next(d for d in focused.json()['documents'] if d['document_id']==row['daily_document_id'])['posted'] is not None
     assert result['stats']['completed']==0
     ok(send(p,task_id='external',kind='return',sets=8))
     abnormal=get(p,'tasks',day=day,scope='abnormal')
@@ -209,6 +217,21 @@ def test_board_zero_report_draft_external_claim_and_outstanding(production):
     assert '外发收回待验收' in external['reasons']
     assert len({(r['line_id'],r['task_id']) for r in abnormal['data']})==abnormal['total']
     assert get(p,'tasks',day=day,page=2)['stats']==get(p,'tasks',day=day)['stats']
+
+
+def test_task_card_focuses_original_daily_after_first_history_page(production):
+    p=production
+    ok(send(p,document_id='internal-long-history',sets=0))
+    for _ in range(21):
+        ok(send(p,document_id='internal-long-history',sets=0))
+    ok(send(p,document_id='external-daily-after-history',task_id='external',sets=1))
+    external=next(row for row in get(p,'tasks',day='2026-10-15')['data'] if row['task_id']=='external')
+    assert external['daily_document_id']=='external-daily-after-history'
+    focused=p.get(BASE+'/orders/line-1/reports',params={'factory_id':'huakang-c','as_of':'2026-10-15','history_page':1,'history_document_id':external['daily_document_id']})
+    assert focused.status_code==200,focused.text
+    value=focused.json()
+    assert value['history_pagination']['page']>1
+    assert any(row['document_id']==external['daily_document_id'] and row['posted'] for row in value['documents'])
 
 
 def test_activity_sorts_real_instants_across_timezones(client):

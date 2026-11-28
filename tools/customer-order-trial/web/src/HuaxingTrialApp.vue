@@ -25,7 +25,7 @@ async function load() {
   failure.value = ''
   try {
     const config = await api.config()
-    if (config.factory_id !== 'huaxing' || config.customers.length !== 1 || !['caixing', 'edu', 'dickie'].includes(config.customers[0]?.code ?? '')) {
+    if (config.factory_id !== 'huaxing' || config.customers.length !== 1 || !['caixing', 'edu', 'dickie', 'seasons'].includes(config.customers[0]?.code ?? '')) {
       throw new Error('启动配置与华兴专用包不一致，请使用完整解压后的专用包。')
     }
     customers.value = config.customers.map(c => c.code)
