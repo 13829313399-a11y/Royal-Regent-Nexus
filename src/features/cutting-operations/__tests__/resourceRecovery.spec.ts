@@ -21,7 +21,7 @@ describe('cutting lazy resource recovery', () => {
   it.each(['Failed to fetch dynamically imported module: /assets/cutting.js', 'Unable to preload CSS for /assets/cutting.css'])('keeps the current page and requires a clean document after %s', async message => {
     const { router, navigate, recovery } = await setup(message)
     expect(router.currentRoute.value.path).toBe('/')
-    expect(recovery.failure.value).toEqual({ target, title: '生产看板' })
+    expect(recovery.failure.value).toEqual({ target, title: '生产工作台' })
     const failure = await router.push(target)
     expect(failure).toBeTruthy()
     expect(router.currentRoute.value.path).toBe('/')

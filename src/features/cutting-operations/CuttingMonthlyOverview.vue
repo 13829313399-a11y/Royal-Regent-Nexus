@@ -6,13 +6,14 @@ import SectionPanel from '@/components/common/SectionPanel.vue'
 import StatusPill from '@/components/common/StatusPill.vue'
 import CuttingReportExport from './CuttingReportExport.vue'
 import CuttingReadTarget from './CuttingReadTarget.vue'
+import CuttingVisualCard from './CuttingVisualCard.vue'
 import {errorMessage,type Access} from './api'
 import {businessDay,workspaceApi} from './workspaceApi'
 type Domain='period'|'settlement'|'payment'
 interface Frozen {kind:Domain;event_id:string;document_id:string;version:number;month:string;valid:boolean;actor:string;date:string}
 interface MonthView {month:string;domains:Array<{kind:Domain;available:boolean;reason?:string;states?:Record<string,number>;count?:number}>;frozen:Frozen[]}
 defineProps<{access?:Access;exportsOnly?:boolean}>()
-const emit=defineEmits<{open:[kind:Domain,month:string,id:string,eventId?:string];loaded:[month:string]}>()
+const emit=defineEmits<{open:[kind:Domain,month:string,id:string,eventId?:string];loaded:[month:string];costs:[]}>()
 const formId=`cutting-monthly-${useId()}`
 const month=defineModel<string>('month',{default:businessDay().slice(0,7)})
 const value=ref<MonthView>(),busy=ref(false),error=ref('')
@@ -52,17 +53,16 @@ watchCuttingWorkspace(()=>void load())
     <div v-if="failedRead" ref="retryRegion"><CuttingReadTarget :target="failedRead" :label="exportsOnly?'冻结报表列表':'月结进度'" retry-label="按原月份重试" :disabled="busy" readable @retry="retry" /></div>
     <div v-if="value" ref="resultRegion" class="cutting-overview" role="region" tabindex="-1" :aria-label="exportsOnly?'冻结报表读取结果':'月结总览读取结果'">
       <SectionPanel v-if="!exportsOnly" title="月结办理与核对" :subtitle="`${value.month} · 单据当前状态`" class="cutting-content-panel">
-        <div class="cutting-review-grid">
-          <article v-for="d in value.domains" :key="d.kind" class="cutting-review-card">
-            <h3>{{names[d.kind]}}</h3>
+        <div class="cutting-visual-grid">
+          <CuttingVisualCard v-for="d in value.domains" :key="d.kind" :title="names[d.kind]" :value="d.available?(d.count??0):undefined" unit="份" :status="d.available?'当前单据状态':'当前不可办理'" :unavailable="!d.available" @detail="d.available&&$emit('open',d.kind,value.month,'')">
             <p class="cutting-muted">{{domainHints[d.kind]}}</p>
             <template v-if="d.available">
-              <p class="cutting-review-count">{{d.count??0}} <small>份</small></p>
               <p class="cutting-muted">{{Object.entries(d.states??{}).map(([s,n])=>`${states[s]??s} ${n}`).join(' · ')||'本月尚未编制'}}</p>
               <Button variant="outline" @click="$emit('open',d.kind,value.month,'')">办理{{names[d.kind]}}</Button>
             </template>
             <p v-else class="cutting-muted">{{d.reason||'当前不可办理'}}</p>
-          </article>
+          </CuttingVisualCard>
+          <CuttingVisualCard v-if="access?.permissions.includes('cost_read')" title="物料费用" value="按原批次" unit="分币种核对" status="当前累计费用" @detail="$emit('costs')"><p class="cutting-muted">正常耗用、损耗、完工与在制分别核对。历史月份金额见月度订单核对，锁月金额见冻结版本。</p></CuttingVisualCard>
         </div>
         <p class="cutting-muted">内部月结按裁床部整月锁定。外发对账提交后占用验收数量，付款待复核时占用可核销金额。</p>
       </SectionPanel>

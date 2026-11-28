@@ -5,7 +5,7 @@ import type { UsageIssue } from './usageApi'
 export interface Page<T> { data:T[];total:number;page:number;page_size:number;token?:string }
 export interface Identity { line_id:string;order_no:string;customer:string;item_no:string }
 export interface TaskRow extends Identity {
-  task_id:string;task_name:string;resource_name:string;execution:string;planned:number;reported:boolean;has_fact:boolean
+  task_id:string;task_name:string;resource_name:string;execution:string;planned:number;reported:boolean;has_fact:boolean;daily_document_id?:string|null
   day_completed:number;day_handed:number;completed:number;target_sets:number;returned:number;accepted:number;historical:boolean;reasons:string[]
 }
 export interface TaskView extends Page<TaskRow> {

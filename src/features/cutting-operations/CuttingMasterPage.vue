@@ -9,7 +9,7 @@ import { cuttingApi, errorMessage, type Access, type Kind, type MasterRecord, ty
 import CuttingCalendarEditor from './CuttingCalendarEditor.vue'
 import CuttingBomImport from './CuttingBomImport.vue'
 import { CUTTING_FACTORY } from './navigation'
-import CuttingMetrics from './CuttingMetrics.vue'
+import CuttingVisualCard from './CuttingVisualCard.vue'
 import { workspaceApi } from './workspaceApi'
 const masterStats=ref<{bom:number;draft:number;material:number;resource:number}>()
 const statsError=ref('')
@@ -254,7 +254,12 @@ function requirements(data: MasterRecord['data']) { return (data as BomData).req
     <div v-if="available&&!loading" class="cutting-review-filters">
       <div class="cutting-master-toolbar"><form @submit.prevent="load(true)"><label :for="queryId">编码／名称／货号 <input :id="queryId" v-model="query" name="q" maxlength="80" /></label><Button :disabled="saving || !!pending">查询</Button></form><Button v-if="canEdit" :disabled="saving || !!pending" type="button" variant="outline" @click="openEditor()">新增资料</Button><span v-else>当前为只读</span></div>
     </div>
-    <CuttingMetrics v-if="available" :items="[{label:'产品 BOM',value:masterStats?.bom??'—',unit:'项'},{label:'待发布草稿',value:masterStats?.draft??'—',unit:'项'},{label:'有效物料',value:masterStats?.material??'—',unit:'项'},{label:'有效执行方',value:masterStats?.resource??'—',unit:'个'}]" />
+    <div v-if="available" class="cutting-visual-grid">
+      <CuttingVisualCard title="产品与配套 BOM" :value="masterStats?.bom??'—'" unit="项" :status="`待发布草稿 ${masterStats?.draft??'—'} 项`" :unavailable="saving||!!pending" @detail="switchKind('bom')"><p class="cutting-muted">工程核对与发布，保留来源及执行版本；旧订单不自动切换新版本。</p></CuttingVisualCard>
+      <CuttingVisualCard title="物料与单位" :value="masterStats?.material??'—'" unit="项有效物料" :unavailable="saving||!!pending" @detail="switchKind('material')"><p class="cutting-muted">物料编码、规格与基本单位。领料申请单位沿用选用的 BOM 行。</p></CuttingVisualCard>
+      <CuttingVisualCard title="本厂与外发资源" :value="masterStats?.resource??'—'" unit="个有效执行方" :unavailable="saving||!!pending" @detail="switchKind('resource')"><p class="cutting-muted">本厂裁剪与外发裁剪分开维护，保留执行方版本。</p></CuttingVisualCard>
+      <CuttingVisualCard title="工作日历" value="按执行方" unit="维护" :unavailable="saving||!!pending" @detail="showCalendar"><p class="cutting-muted">核对工作周、例外日期及准备周期；已发布计划保留原依据。</p></CuttingVisualCard>
+    </div>
     <p v-if="statsError" role="alert">统计暂不可用：{{statsError}}</p>
     <CuttingBomImport v-if="available && kind === 'bom' && canEdit && !editor && !transition && !pending"
       ref="bomImport" @imported="showImportedBom" />

@@ -3,6 +3,7 @@ import StatusPill from '@/components/common/StatusPill.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import { Button } from '@/components/ui/button'
+import { Drawer, DrawerContent, DrawerTitle, DrawerDescription } from '@/components/ui/drawer'
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, useId } from 'vue'
 import { RouterLink, onBeforeRouteLeave, routerKey, type LocationQueryRaw } from 'vue-router'
 import { cuttingApi, errorMessage, type Access } from './api'
@@ -16,6 +17,7 @@ import CuttingLocationNotice from './CuttingLocationNotice.vue'
 import CuttingHistoryPager from './CuttingHistoryPager.vue'
 import CuttingTaskBoard from './CuttingTaskBoard.vue'
 import CuttingSubnav from './CuttingSubnav.vue'
+import CuttingWorkViews from './CuttingWorkViews.vue'
 import CuttingPiecePaste from './CuttingPiecePaste.vue'
 import CuttingOrderReceipt from './CuttingOrderReceipt.vue'
 const formId = `cutting-reporting-${useId()}`
@@ -63,6 +65,8 @@ const stateSnapshot=()=>JSON.stringify([entry.value,reason.value])
 const unappliedPieces = ref(false)
 const dirty=computed(()=>!!entry.value && (unappliedPieces.value || stateSnapshot()!==baseline.value))
 const task=computed(()=>result.value?.tasks.find(t=>t.task_id===entry.value?.task_id))
+const quickDrawer=computed(()=>router?.currentRoute.value.query.quick_report==='1')
+const originalRecord=computed(()=>result.value?.documents.find(doc=>doc.document_id===documentId.value)?.posted)
 const newReportsBlocked=computed(()=>!!selected.value?.needs_receipt||selected.value?.snapshot.status==='cancelled'||!!selected.value?.planning_summary?.published_stale)
 const kindsFor=(t:ReportTask|undefined,mode:ProductionInput['mode'])=>Object.entries(reportLabels).filter(([kind])=>
   can(reportPermission(kind as ReportKind)) && (kind!=='daily'||!t?.historical) &&
@@ -91,13 +95,14 @@ const location = useCuttingLocation(discard, () => {
 }, path=>presentationPaths.has(path))
 const originalTaskDay=computed(()=>location.value?.taskDay || location.value?.day ||
   taskBoardDay.value || cuttingQueryDay(router?.currentRoute.value.query.day))
-const ordersDestination=computed(()=>({path:`${CUTTING_BASE}/reporting`,query:{
+const ordersDestination=computed(()=>({path:`${CUTTING_BASE}/dashboard`,query:{
   factory:CUTTING_FACTORY, ...(originalTaskDay.value?{day:originalTaskDay.value}:{})
 }}))
 const planningDestination = computed(() => {
   const lineId = selected.value?.line_id ?? ''
   const month = location.value?.lineId === lineId ? location.value.month : undefined
-  return cuttingDestination(lineId, month ?? '', 'planning')
+  const target=cuttingDestination(lineId, month ?? '', 'planning')
+  return {...target,query:{...target.query,...(result.value?.as_of?{day:result.value.as_of}:{}),...(originalTaskDay.value?{task_day:originalTaskDay.value}:{})}}
 })
 
 async function persistOrderLocation(lineId: string, day: string, taskDay=originalTaskDay.value) {
@@ -166,7 +171,7 @@ async function loadWorkspace(){
       }
       await select(order);return
     }
-    reportingView.value='tasks'
+    reportingView.value=router?.currentRoute.value.query.reporting_view==='records'?'records':'tasks'
   }catch(e){
     if (alive && request === generation) {
       if (locatingOrder && (e as { response?: { status?: number } }).response?.status !== 401) {
@@ -270,6 +275,17 @@ async function select(row: CuttingOrder, intent: 'select' | 'statistics' | 'reco
     const response = await reportingApi.read(row.line_id, day, 1, undefined, documentId)
     if (!alive || request !== generation) return
     result.value = response
+    if(intent==='select'&&router?.currentRoute.value.query.quick_report==='1'&&target?.id){
+      const directDoc=target.kind==='report'?response.documents.find(doc=>doc.document_id===target.id):undefined
+      const directEntry=directDoc&&(directDoc.draft??directDoc.posted)?.data.entry
+      const matchingTask=response.tasks.find(item=>item.task_id===(directEntry?.task_id??(target.kind==='task'?target.id:undefined)))
+      if(matchingTask){
+        const existing=directDoc??response.documents.find(doc=>!doc.voided&&(doc.draft??doc.posted)?.data.entry.kind==='daily'&&(doc.draft??doc.posted)?.data.entry.task_id===matchingTask.task_id&&(doc.draft??doc.posted)?.data.entry.day===response.as_of)
+        if(existing&&can(reportPermission('daily')))edit(existing)
+        else if(can(reportPermission('daily'))&&router.currentRoute.value.query.quick_reported==='1')notice.value='该任务当日已有日报，请定位原记录后更正，不能另建重复日报。'
+        else start(matchingTask)
+      }
+    }
     if (intent !== 'recover') asOf.value = response.as_of
     needsLogin.value = false
     if (refreshStatistics) {
@@ -395,7 +411,8 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
 <template>
   <section class="cutting-page cutting-review-page cutting-master reporting-page">
     <CuttingLocationNotice :location="location" :selected-id="result?selected?.line_id:undefined" />
-    <PageHeader title="每日记录" description="查看当日任务、生产日报、裁片配套、外发验收与交接进度。">
+    <CuttingWorkViews active="history" />
+    <PageHeader title="每日记录" description="生产工作台 · 生产日报、裁片配套、外发验收与交接。">
       <template v-if="available&&!needsLogin&&!locationError" #actions>
         <Button :id="fieldId('orders_toggle')" type="button" :aria-expanded="orderListOpen" :aria-controls="fieldId('orders')" @click="orderListOpen?closeOrders():showOrders()">选择生产订单</Button>
       </template>
@@ -460,7 +477,7 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
           </div>
       </SectionPanel>
         <CuttingSubnav v-if="selected" :model-value="reportingView" :items="reportingTabs" label="每日记录工作视图" @update:model-value="changeReportingView" />
-        <CuttingTaskBoard v-show="reportingView==='tasks'" reporting @loaded-query="taskQueryLoaded">
+        <CuttingTaskBoard v-show="reportingView==='tasks'" cards reporting @loaded-query="taskQueryLoaded">
           <template #order-changes="{ count, query: keyword }"><Button variant="outline" size="sm" @click="showOrders(true,keyword)"><StatusPill :label="`订单变更待确认 · ${count} 笔`" tone="amber" compact /></Button></template>
         </CuttingTaskBoard>
         <SectionPanel v-show="reportingView!=='tasks'||!!entry||!!pending" class="cutting-content-panel report-main" :title="orderTitle">
@@ -513,7 +530,10 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
           <p v-if="(t.settlement_context?.execution??t.execution)==='outsourced'">外厂报称 {{ t.balance?.claimed ?? 0 }} · 实收 {{ t.balance?.returned ?? 0 }} · 验收合格 {{ t.balance?.accepted ?? 0 }} · 不合格 {{ t.balance?.rejected ?? 0 }} · 待验 {{ (t.balance?.returned??0)-(t.balance?.accepted??0)-(t.balance?.rejected??0) }}</p>
         </div>
         <p v-if="!result.tasks.length">暂无已发布任务，请先在排期页发布任务与日计划。</p>
-        <form v-if="entry" class="cutting-master-form report-form" @submit.prevent="submit(decision||'post')">
+        <component :is="quickDrawer?Drawer:'div'" :open="!!entry" @update:open="(open:boolean)=>{if(!open)cancel()}">
+        <component :is="quickDrawer?DrawerContent:'div'" v-if="entry" class="cutting-report-editor" :class="{'cutting-report-drawer cutting-master':quickDrawer}" overlay-class="cutting-report-drawer-overlay">
+        <template v-if="quickDrawer"><DrawerTitle>填数与记录更正</DrawerTitle><DrawerDescription>{{selected.snapshot.reference_no}} · {{task?.name}} · {{entry.day}}</DrawerDescription><p v-if="originalRecord" class="cutting-notice">原记录 V{{originalRecord.version}} · {{reportLabels[originalRecord.data.entry.kind]}} · 原套数 {{originalRecord.data.entry.sets}}；更正保留原版本。</p><p v-if="error" role="alert" class="cutting-error">{{error}}</p></template>
+        <form class="cutting-master-form report-form" @submit.prevent="submit(decision||'post')">
           <h3>{{ decision==='review'?'主管抽查':decision==='void'?'作废生效记录':decision==='discard'?'放弃已保存草稿':editingExisting?'编辑／更正原记录':'新增生产记录' }}</h3>
           <fieldset :disabled="saving||!!pending">
             <template v-if="!decision">
@@ -531,6 +551,7 @@ const effectiveEntry=(d:ReportDocument)=>(d.posted||d.draft||d.history[0])!.data
             <div class="cutting-master-actions"><Button variant="outline" v-if="!decision&&can(reportPermission(entry.kind))" type="button" :disabled="unappliedPieces" @click="submit('save')">保存草稿</Button><Button v-if="can(decision==='review'?'report_review':reportPermission(entry.kind))" type="submit" :disabled="unappliedPieces">{{ decision?'确认操作':'提交生效' }}</Button><Button variant="outline" type="button" @click="cancel">取消编辑</Button></div>
           </fieldset>
         </form>
+        </component></component>
         <h3>日报与业务记录</h3>
         <p>记录列表保留全部日期；上方统计按截止日计算。草稿及更正草稿不覆盖原生效数量。</p>
         <CuttingHistoryPager v-if="result.history_pagination" :value="result.history_pagination" :busy="loading||saving||!!pending" @page="historyPage" />
