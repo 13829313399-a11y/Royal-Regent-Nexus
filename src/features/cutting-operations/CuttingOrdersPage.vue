@@ -23,6 +23,7 @@ import CuttingPlanningMetrics from './CuttingPlanningMetrics.vue'
 import CuttingInventory from './CuttingInventory.vue'
 import CuttingActivityPage from './CuttingActivityPage.vue'
 import CuttingSubnav from './CuttingSubnav.vue'
+import CuttingWorkViews from './CuttingWorkViews.vue'
 import CuttingScheduleImport from './CuttingScheduleImport.vue'
 import CuttingOrderReceipt from './CuttingOrderReceipt.vue'
 import CuttingPurchaseReplyEvidence from './CuttingPurchaseReplyEvidence.vue'
@@ -347,6 +348,7 @@ function status(row: CuttingOrder) {
     <p v-else class="cutting-notice">裁床订单结构尚未就绪，请先完成显式迁移；当前不读取或录入业务数据。</p>
   </section>
   <section v-else class="cutting-page cutting-review-page orders-page">
+    <CuttingWorkViews v-if="workspace.path==='planning'" active="planning" />
     <CuttingLocationNotice :location="manualLocation??location" :selected-id="selected?.line_id" />
     <PageHeader :title="workspace.title" :description="workspace.path === 'materials' ? '本厂现场、外发在外物料与订单领用，按原实发追溯。' : '订单、工程需求与生产预排'"/>
     <SectionPanel v-if="selected?.snapshot.intake_kind==='cutting-schedule-v1'" title="业务排期来源" class="cutting-content-panel">

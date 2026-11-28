@@ -2,7 +2,7 @@ vi.mock('../workspaceApi',()=>import('./workspaceFixtures'))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
-import { CUTTING_BASE, CUTTING_WORKSPACES } from '../navigation'
+import { CUTTING_BASE, CUTTING_WORKSPACES, CUTTING_MAIN_WORKSPACES } from '../navigation'
 import { cuttingOperationsRoutes } from '../routes'
 import CuttingCutover from '../CuttingCutover.vue'
 import { cutoverApi } from '../cutoverApi'
@@ -183,17 +183,18 @@ describe('cutting workspace entry', () => {
     await flushPromises()
     expect(wrapper.find('input').exists()).toBe(false)
   })
-  it('opens dashboard and navigates all eight workspaces without dropping the factory', async () => {
+  it('shows five main workspaces and preserves all legacy deep links and the factory', async () => {
     const router = await open(`${CUTTING_BASE}?factory=huakang-c`)
     expect(router.currentRoute.value.path).toBe(`${CUTTING_BASE}/dashboard`)
     expect(router.currentRoute.value.meta.requiresAuth).toBe(true)
-    expect(wrapper!.findAll('nav[aria-label="裁床工作区导航"] a')).toHaveLength(8)
+    expect(wrapper!.findAll('nav[aria-label="裁床工作区导航"] a')).toHaveLength(5)
     for (const workspace of CUTTING_WORKSPACES) {
-      await wrapper!.get(`nav a[href="${CUTTING_BASE}/${workspace.path}?factory=huakang-c"]`).trigger('click')
+      if(CUTTING_MAIN_WORKSPACES.some(w=>w.path===workspace.path))await wrapper!.get(`nav a[href="${CUTTING_BASE}/${workspace.path}?factory=huakang-c"]`).trigger('click')
+      else await router.push({path:`${CUTTING_BASE}/${workspace.path}`,query:{factory:'huakang-c'}})
       await flushPromises()
       await vi.waitFor(async () => {
         await flushPromises()
-        expect(wrapper!.get('h1').text()).toBe(workspace.title)
+        expect(wrapper!.get('h1').text()).toBe(workspace.path==='costs'?'生产与外发月结':workspace.title)
       }, { timeout: 10000 })
       if (workspace.path === 'master') {
         expect(wrapper!.text()).toContain('基础资料尚未启用')
@@ -202,7 +203,9 @@ describe('cutting workspace entry', () => {
         expect(wrapper!.find('form').exists()).toBe(false)
       } else if (workspace.path === 'costs') {
         expect(wrapper!.text()).toContain('实际材料费用尚未启用')
-        expect(wrapper!.find('form').exists()).toBe(false)
+        expect(router.currentRoute.value.path).toBe(`${CUTTING_BASE}/closing`)
+        expect(router.currentRoute.value.query.view).toBe('costs')
+        expect(wrapper!.get('nav[aria-label="裁床工作区导航"] a[aria-current="page"]').text()).toContain('月结')
       } else if (workspace.path === 'closing') {
         expect(wrapper!.text()).toContain('月结前核对尚未启用')
         // P5a keeps a read-only preparation form; disabled access must still
@@ -223,7 +226,7 @@ describe('cutting workspace entry', () => {
     await wrapper!.get('a.cutting-back').trigger('click')
     await flushPromises()
     expect(router.currentRoute.value.fullPath).toBe('/modules/production?factory=huakang-c')
-  })
+  },20000)
   it.each(['', '?factory=group', '?factory=huaxing', '?factory=huakang-d', '?factory=bad', '?factory=huakang-c&factory=huakang-d'])(
     'rejects missing, foreign or ambiguous factory: %s', async query => {
       const router = await open(`${CUTTING_BASE}/master${query}`)

@@ -4,6 +4,7 @@ import { computed,onBeforeUnmount,ref,useId,watch } from 'vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import { Button } from '@/components/ui/button'
 import CuttingMetrics from './CuttingMetrics.vue'
+import CuttingVisualCard from './CuttingVisualCard.vue'
 import { workspaceApi,type InventoryView } from './workspaceApi'
 import { errorMessage } from './api'
 defineEmits<{open:[lineId:string,issueId:string]}>()
@@ -35,17 +36,25 @@ watchCuttingWorkspace(()=>void load())
       <p class="cutting-muted">当前查询条件：订单号／货号 {{applied.q||'全部'}}；保管范围 {{applied.execution==='internal'?'本厂现场':applied.execution==='outsourced'?'外发在外':'本厂与外发'}}。</p>
       <p v-if="unapplied" role="status" class="cutting-muted">筛选有未查询的修改；当前仍按上次查询条件显示。点击“查询／刷新”后应用，翻页和原条件重试不会提交新输入。</p>
     </div>
-    <CuttingMetrics :items="[{label:summary?'订单任务物料汇总':'关联实发记录',value:result?.total??'—',unit:summary?'组':'笔',hint:'已冲销实发不计入当前台账'},...Object.entries(result?.units??{}).map(([unit,v])=>({label:`账面余料（${unit}）`,value:v.remaining_quantity??'—',unit,hint:`待签收 ${v.unsigned_quantity}；已退仓 ${v.returned_quantity}`}))]" />
+    <div class="cutting-task-summary"><span>{{summary?'订单任务物料汇总':'关联实发记录'}} <strong>{{result?.total??'—'}}</strong> {{summary?'组':'笔'}}</span><span v-for="(value,unit) in result?.units" :key="unit">账面余料 <strong>{{value.remaining_quantity}}</strong> {{unit}} · 待签收 {{value.unsigned_quantity}} {{unit}}</span></div>
     <SectionPanel :title="summary?'订单领用汇总':'本厂现场与外发在外物料台账'" class="cutting-content-panel">
       <p v-if="busy" role="status">正在读取真实签收与耗用余额…</p><p v-if="error" role="alert">{{error}}</p>
       <Button v-if="failedQuery" variant="outline" :disabled="busy" @click="retry">按原条件重试（第 {{failedQuery.page}} 页）</Button>
       <p class="cutting-muted">账面余料＝签收－退仓－正常耗用－损耗。未签收实发单列，退仓以仓库生效记录为准；盘余差异不自动转为损耗。</p>
+      <div class="cutting-visual-grid">
+        <CuttingVisualCard v-for="row in result?.data" :key="row.issue_id" :title="row.context.item_name" :eyebrow="`${row.context.item_code} · ${row.order_no}`" :status="row.context.execution==='internal'?'本厂现场':'外发在外'" :value="row.remaining_quantity" :unit="row.context.unit+' · 当前账面余料'" :progress="Number(row.received_quantity)>0?Number(row.consumed_quantity)/Number(row.received_quantity)*100:undefined" @detail="$emit('open',row.line_id,summary?'':row.issue_id)">
+          <p>{{row.context.task_name}} · {{row.context.resource_name}}</p>
+          <dl class="cutting-card-facts"><div><dt>签收</dt><dd>{{row.received_quantity}} {{row.context.unit}}</dd></div><div><dt>正常耗用</dt><dd>{{row.consumed_quantity}} {{row.context.unit}}</dd></div><div><dt>损耗</dt><dd>{{row.loss_quantity}} {{row.context.unit}}</dd></div><div><dt>退仓</dt><dd>{{row.returned_quantity}} {{row.context.unit}}</dd></div></dl>
+          <p class="cutting-muted">待签收 {{row.unsigned_quantity}} {{row.context.unit}} · {{summary?`${row.issue_count} 笔实发`:row.context.root_batch_id}}</p>
+        </CuttingVisualCard>
+      </div>
+      <details class="cutting-comparison"><summary>展开逐项台账</summary>
       <div class="cutting-table-scroll" tabindex="0" role="region" aria-label="裁床物料库存台账"><table><thead><tr><th>物料／规格／颜色</th><th>订单／任务</th><th>执行方</th><th>原批次／实发</th><th>单位</th><th>签收</th><th>退仓</th><th>正常耗用</th><th>损耗</th><th>账面余料</th><th>待签收</th><th>操作</th></tr></thead><tbody><tr v-for="row in result?.data" :key="row.issue_id">
         <td>{{row.context.item_name}}<br />{{row.context.item_code}}<br />{{row.context.warehouse_material.spec}} · {{row.context.warehouse_material.color}}</td><td>{{row.order_no}}<br />{{row.context.task_name}}</td>
         <td>{{row.context.resource_name}}<br />{{row.context.execution==='internal'?'本厂':'外发'}}</td><td><template v-if="summary">{{row.issue_count}} 笔实发 · 分原单追溯</template><template v-else>{{row.context.root_batch_id}}<br />{{row.issue_id}}<br />{{row.context.lot}} / {{row.context.roll_no}}</template></td><td>{{row.context.unit}}</td>
         <td>{{row.received_quantity}}</td><td>{{row.returned_quantity}}</td><td>{{row.consumed_quantity}}</td><td>{{row.loss_quantity}}</td><td><strong>{{row.remaining_quantity}}</strong></td><td>{{row.unsigned_quantity}}</td>
         <td><Button variant="outline" size="sm" @click="$emit('open',row.line_id,summary?'':row.issue_id)">领用与耗用详情</Button></td>
-      </tr></tbody></table></div>
+      </tr></tbody></table></div></details>
       <p v-if="result&&!result.total" class="cutting-no-records">{{applied.q||applied.execution?'当前筛选无匹配库存记录，请清除筛选后查看。':'暂无关联实发记录。先在“领料申请”选择已发布任务申请，由布料仓核对发料。'}}<Button v-if="applied.q||applied.execution" variant="outline" :disabled="busy" @click="clearFilters">清除筛选</Button></p>
       <nav v-if="result" class="order-pagination" aria-label="库存台账分页"><span>第 {{result.page}} 页 · 共 {{result.total}} {{summary?'组':'笔'}}</span><Button variant="outline" :disabled="busy||result.page<=1" @click="load(result.page-1)">上一页</Button><Button variant="outline" :disabled="busy||result.page*50>=result.total" @click="load(result.page+1)">下一页</Button></nav>
     </SectionPanel>

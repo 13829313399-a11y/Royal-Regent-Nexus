@@ -8,7 +8,7 @@ export function isCuttingFactory(factory: unknown): factory is typeof CUTTING_FA
 // Each implemented workspace uses the canonical backend permission boundary.
 export const CUTTING_WORKSPACES = [
   {
-    path: 'dashboard', short: '生产看板', title: '生产看板', icon: 'LayoutDashboard',
+    path: 'dashboard', short: '生产工作台', title: '生产工作台', icon: 'LayoutDashboard',
     description: '跟进当日任务与异常，分别核对计划、完成和交接。',
     tabs: ['当日任务', '异常任务', '历史实绩'], columns: [], empty: '暂无生产任务',
     next: '签收订单并发布计划后，可在看板跟进每日执行。',
@@ -78,3 +78,11 @@ export const CUTTING_WORKSPACES = [
 ] as const
 
 export type CuttingWorkspace = typeof CUTTING_WORKSPACES[number]
+
+// Keep legacy deep links registered; the five visible workspaces own their views.
+export const CUTTING_MAIN_WORKSPACES = CUTTING_WORKSPACES.filter(w => !['planning','reporting','costs'].includes(w.path))
+export function cuttingMainWorkspace(path:string) {
+  if (['planning','reporting'].some(view=>path.endsWith('/'+view))) return 'dashboard'
+  if (path.endsWith('/costs')) return 'closing'
+  return path.split('/').at(-1)
+}

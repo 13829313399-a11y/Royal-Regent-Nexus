@@ -4,12 +4,14 @@ import { computed,nextTick,onMounted,onBeforeUnmount,ref,useId } from 'vue'
 import { RouterLink } from 'vue-router'
 import PageHeader from '@/components/common/PageHeader.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
+import CuttingVisualCard from './CuttingVisualCard.vue'
 import { Button } from '@/components/ui/button'
 import { workspaceApi,type ActivityRow,type Page } from './workspaceApi'
 import { errorMessage } from './api'
 import { cuttingDestination } from './location'
 import { CUTTING_BASE,CUTTING_FACTORY } from './navigation'
 const props=defineProps<{embedded?:boolean;initialSource?:string}>()
+const expandedEvidence=ref('')
 const source=ref(props.initialSource??''),query=ref(''),orderQuery=ref(''),month=ref(''),result=ref<Page<ActivityRow>>(),busy=ref(false),error=ref('')
 const applied=ref({source:source.value,q:'',order_q:'',month:undefined as string|undefined})
 type ActivityQuery=typeof applied.value & {page:number;expected_token?:string}
@@ -122,8 +124,10 @@ watchCuttingWorkspace(()=>void load())
       <form class="order-toolbar" @submit.prevent="load(1,true)"><label :for="`${filterId}-source`">业务来源<select :id="`${filterId}-source`" v-model="source" name="source"><option value="">全部授权来源</option><option v-for="(label,key) in sources" :key="key" :value="key">{{label}}</option></select></label><label :for="`${filterId}-order`">订单号／货号<input :id="`${filterId}-order`" v-model="orderQuery" name="order_q" maxlength="80" /></label><label :for="`${filterId}-month`">业务期间<input :id="`${filterId}-month`" v-model="month" name="month" type="month" min="2000-01" /></label><label :for="`${filterId}-query`">单据／操作人／原因<input :id="`${filterId}-query`" v-model="query" name="q" maxlength="80" /></label><Button type="submit" :disabled="busy">查询</Button><Button :id="refreshButtonId" type="button" variant="outline" :disabled="busy" :title="embedded ? refreshHint : undefined" @click="refresh">刷新当前结果</Button><Button type="button" variant="outline" :disabled="busy" @click="clearFilters">清除筛选</Button></form>
       <p v-if="embedded && result && lastSuccessAt" class="cutting-muted activity-summary">当前结果：{{appliedSummary}}<span class="activity-read-time"> · 更新于 <time :datetime="lastSuccessAt" :title="`${readTimeLabel(lastSuccessAt)}（页面读取时间）`">{{readClockLabel(lastSuccessAt)}}</time></span></p>
       <template v-if="!embedded">
+        <details class="cutting-comparison"><summary>查看已应用的筛选条件</summary>
         <p class="cutting-muted">当前查询条件：业务来源 {{sources[applied.source]||'全部授权来源'}}；订单号／货号 {{applied.order_q||'全部'}}；业务期间 {{applied.month||'全部期间'}}；单据／操作人／原因 {{applied.q||'未限定'}}。</p>
         <p class="cutting-muted">刷新从第 1 页重新核对当前已查询条件，不应用尚未查询的新输入。</p>
+        </details>
       </template>
       <p v-if="unapplied" class="cutting-muted" role="status">{{embedded ? '有未应用的筛选，点击「查询」更新结果。' : '筛选有未查询的修改，当前结果仍按上次查询条件展示；翻页和刷新不应用新输入，点击“查询”才应用。'}}</p>
       <p v-if="busy" role="status">{{readingTarget?.retry?(embedded?`正在按原条件重试第 ${readingTarget.page} 页…`:`正在按原条件重试：${targetLabel(readingTarget)}。`):'正在读取操作记录…'}}</p>
@@ -132,7 +136,14 @@ watchCuttingWorkspace(()=>void load())
       <p v-else-if="failedQuery" class="cutting-muted">重试目标：{{targetLabel(failedQuery)}}。{{restartRequired?'原分页依据已失效，重新从第 1 页核对，不再使用旧依据。':failedQuery.expected_token?'保留原分页依据。':'本次没有分页依据，将按原条件从第 1 页重新读取并获取新依据。'}}不应用尚未查询的新输入，不提交业务记录。</p>
       <p v-if="staleResult&&result&&!(embedded&&firstPageFailed)" class="cutting-muted" role="status">{{embedded ? `仍显示上次读取的第 ${result.page} 页` : `以下仍为上次成功读取的第 ${result.page} 页结果，尚未取得本次请求的新结果，请勿将其视为已刷新数据。`}}</p>
       <p v-if="!embedded&&result&&lastSuccessAt" class="cutting-muted">上次成功读取时间：<time :datetime="lastSuccessAt">{{readTimeLabel(lastSuccessAt)}}</time>（页面读取时间，非业务日期）</p>
-      <div ref="resultRegion" class="cutting-table-scroll" role="region" tabindex="0" aria-label="可追溯操作日志"><table><thead><tr><th>操作时间／业务日期</th><th>来源与操作</th><th>单据／版本</th><th>操作人</th><th>依据与关联</th><th>操作</th></tr></thead><tbody><tr v-for="row in result?.data" :key="`${row.source}:${row.id}:${row.version}`">
+      <div v-if="!embedded" ref="resultRegion" class="cutting-activity-cards" role="region" tabindex="0" aria-label="可追溯操作日志">
+        <CuttingVisualCard v-for="row in result?.data" :key="`${row.source}:${row.id}:${row.version}`" :title="actions[row.action]??row.action" :eyebrow="`${new Date(row.occurred_at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})} · ${sources[row.source]??row.source}`" :status="`V${row.version}`" :to="row.price_evidence?undefined:link(row)" @detail="expandedEvidence=row.id">
+          <p><strong>{{row.order_no||sources[row.source]}}</strong> · {{row.document_id}}</p><p class="cutting-muted">{{row.actor}} · 业务期间 {{row.business_day||row.month||'未单独登记'}} · {{row.reason}}</p>
+          <p v-if="row.related_id" class="cutting-muted">关联原单 {{row.related_id}}</p>
+          <div v-if="row.price_evidence&&expandedEvidence===row.id" class="cutting-card-evidence" role="region" aria-label="价格确认原记录"><p>事件 {{row.id}} · 任务 {{row.price_evidence.task_id}}</p><p>{{row.price_evidence.unit_price}} {{row.price_evidence.currency}}／套</p><p>{{row.price_evidence.evidence}}</p></div>
+        </CuttingVisualCard>
+      </div>
+      <div v-else ref="resultRegion" class="cutting-table-scroll" role="region" tabindex="0" aria-label="可追溯操作日志"><table><thead><tr><th>操作时间／业务日期</th><th>来源与操作</th><th>单据／版本</th><th>操作人</th><th>依据与关联</th><th>操作</th></tr></thead><tbody><tr v-for="row in result?.data" :key="`${row.source}:${row.id}:${row.version}`">
         <td>{{new Date(row.occurred_at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})}}<br />{{row.business_day||row.month||'未单独登记业务日期'}}</td>
         <td>{{sources[row.source]}}<br />{{actions[row.action]??row.action}}</td><td><strong>{{row.order_no||sources[row.source]}}</strong><br />{{row.document_id}}<br />V{{row.version}}</td><td>{{row.actor}}</td>
         <td>{{row.reason}}<p v-if="row.related_id">关联原单：{{row.related_id}}</p></td><td><details v-if="row.price_evidence"><summary>价格确认原记录</summary><p>事件 {{row.id}} · 任务 {{row.price_evidence.task_id}}</p><p>{{row.price_evidence.unit_price}} {{row.price_evidence.currency}}／套</p><p>{{row.price_evidence.evidence}}</p></details><Button v-else as-child variant="outline" size="sm"><RouterLink :to="link(row)">追溯原记录</RouterLink></Button></td>

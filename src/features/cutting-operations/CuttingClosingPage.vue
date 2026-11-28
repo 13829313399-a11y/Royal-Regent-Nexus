@@ -9,7 +9,7 @@ import { cuttingApi, errorMessage, type Access } from './api'
 import { ordersApi, type CuttingOrder } from './ordersApi'
 import { closingApi, type ClosingPreview } from './closingApi'
 import { orderProductName, unclassifiedStyle, unclassifiedStyleHint } from './orderDisplay'
-import type { CuttingWorkspace } from './navigation'
+import { CUTTING_WORKSPACES, type CuttingWorkspace } from './navigation'
 import CuttingClosingReport from './CuttingClosingReport.vue'
 import CuttingPeriodClosing from './CuttingPeriodClosing.vue'
 import CuttingSettlement from './CuttingSettlement.vue'
@@ -18,6 +18,9 @@ import CuttingCutover from './CuttingCutover.vue'
 import { useCuttingLocation } from './location'
 import CuttingSubnav from './CuttingSubnav.vue'
 import CuttingMonthlyOverview from './CuttingMonthlyOverview.vue'
+import CuttingCostsPage from './CuttingCostsPage.vue'
+const costsPanel=ref<InstanceType<typeof CuttingCostsPage>>()
+const costsWorkspace=CUTTING_WORKSPACES.find(w=>w.path==='costs')!
 // Editable search text is applied only by an explicit query.
 const appliedQuery=ref('')
 const formId=`cutting-closing-${useId()}`
@@ -26,6 +29,7 @@ const financialContext=ref(0)
 let financialGeneration=0
 let locationPending=true
 async function changeClosingView(value:string){
+ if(closingView.value==='costs'&&value!=='costs'&&costsPanel.value?.discard()===false)return
  if(value==='overview'&&closingView.value==='overview')return
  locationPending=false
  restoringLocation=false
@@ -34,12 +38,16 @@ async function changeClosingView(value:string){
  if(failedPreview.value)result.value=undefined
  failedPreview.value=undefined
  closingView.value=value;await nextTick()
+ if(value==='costs'){
+   if(route)await persistQuery({...route.query,view:'costs'})
+   return
+ }
  if(value==='period')periodPanel.value?.activateMonth(month.value)
  if(value==='settlement')settlementPanel.value?.activateMonth(month.value)
  if(value==='payment')paymentPanel.value?.activateMonth(month.value)
  void persistOverviewLocation()
 }
-const closingTabs=[{id:'overview',label:'月结总览'},{id:'period',label:'内部月结'},{id:'settlement',label:'外发对账与结算'},{id:'payment',label:'付款与核销'},{id:'exports',label:'冻结报表'},{id:'opening',label:'历史期初'}]
+const closingTabs=[{id:'overview',label:'月结总览'},{id:'costs',label:'物料费用'},{id:'period',label:'内部月结'},{id:'settlement',label:'外发对账与结算'},{id:'payment',label:'付款与核销'},{id:'exports',label:'冻结报表'},{id:'opening',label:'历史期初'}]
 const periodPanel=ref<InstanceType<typeof CuttingPeriodClosing>>()
 const route=inject(routeLocationKey,undefined)
 const router=inject(routerKey,undefined)
@@ -196,6 +204,7 @@ async function load(nextPage=1,followLocation=false,apply=false){
   const ticket=++generation;result.value=undefined;selected.value=undefined;rows.value=[];access.value=undefined;accessUnavailable.value=false;loading.value=true;error.value=''
   try{
     const rights=await cuttingApi.access();if(!alive||ticket!==generation)return;access.value=rights
+    if(closingView.value==='costs')return
     if(!ready(rights))return
     if(target){
       const order=await ordersApi.read(target.lineId);if(!alive||ticket!==generation)return
@@ -270,9 +279,10 @@ onMounted(()=>void loadLocation())
 <template>
   <section class="cutting-page cutting-review-page cutting-master">
     <PageHeader :title="workspace.title" description="内部月结、外发加工费与付款分别办理，实时核对和冻结快照分别追溯。" />
-    <CuttingSubnav :model-value="closingView" @update:model-value="changeClosingView" :items="closingTabs" label="月结工作视图" />
-    <p class="cutting-notice">内部材料月结与外发加工费结算分别办理。实时核对不代表锁月；冻结报表按所选版本追溯，当前有效状态以版本提示为准。付款登记与核销不操作银行。</p>
-    <CuttingMonthlyOverview v-model:month="month" v-if="access?.enabled" v-show="closingView==='overview'||closingView==='exports'" :access="access" :exports-only="closingView==='exports'" @open="openMonthly" @loaded="overviewLoaded" />
+    <div class="cutting-closing-navigation"><CuttingSubnav :model-value="closingView" @update:model-value="changeClosingView" :items="closingTabs.filter(tab=>['overview','costs','period','settlement'].includes(tab.id))" label="月结工作视图" /><details class="cutting-more-views"><summary>{{closingTabs.find(tab=>tab.id===closingView)&&['payment','exports','opening'].includes(closingView)?closingTabs.find(tab=>tab.id===closingView)?.label:'更多'}}</summary><CuttingSubnav :model-value="closingView" @update:model-value="changeClosingView" :items="closingTabs.filter(tab=>['payment','exports','opening'].includes(tab.id))" label="更多月结视图" /></details></div>
+    <CuttingCostsPage v-if="closingView==='costs'" ref="costsPanel" :workspace="costsWorkspace" embedded />
+    <details class="cutting-comparison"><summary>月结与冻结口径</summary><p class="cutting-notice">内部材料月结与外发加工费结算分别办理。实时核对不代表锁月；冻结报表按所选版本追溯，当前有效状态以版本提示为准。付款登记与核销不操作银行。</p></details>
+    <CuttingMonthlyOverview v-model:month="month" v-if="access?.enabled" v-show="closingView==='overview'||closingView==='exports'" :access="access" :exports-only="closingView==='exports'" @open="openMonthly" @loaded="overviewLoaded" @costs="changeClosingView('costs')" />
     <div v-show="closingView==='opening'"><CuttingCutover :access="access" :access-loading="loading" @payment="openPayment" @settlement="openSettlement" /></div>
     <div v-show="closingView==='period'"><CuttingPeriodClosing ref="periodPanel" :access="access" :access-loading="loading" :access-unavailable="accessUnavailable" :navigation-context="financialContext" @located="(target,context)=>recordLocated('period',target,context)" @restored="(target,context)=>restoredMonth('period',target,context)" /></div>
     <div v-show="closingView==='settlement'"><CuttingSettlement ref="settlementPanel" :access="access" :access-loading="loading" :access-unavailable="accessUnavailable" :navigation-context="financialContext" @located="(target,context)=>recordLocated('settlement',target,context)" @restored="(target,context)=>restoredMonth('settlement',target,context)" @payment="openPayment" /></div>

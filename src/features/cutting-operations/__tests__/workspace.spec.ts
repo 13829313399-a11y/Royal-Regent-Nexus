@@ -783,6 +783,8 @@ describe('cutting read-only workspaces',()=>{
     wrapper=mount(Activity,{global:{plugins:[router]}});await flushPromises()
     expect(wrapper.get('a').attributes('href')).toContain('focus_kind=cost_event')
     expect(wrapper.get('a').attributes('href')).toContain('cost_view=history')
+    expect(wrapper.text()).not.toContain('QUOTE-001')
+    await wrapper.findAll('button').find(b=>b.text().startsWith('查看明细'))!.trigger('click')
     expect(wrapper.text()).toContain('QUOTE-001')
     expect(wrapper.findAll('a')).toHaveLength(1)
   })
