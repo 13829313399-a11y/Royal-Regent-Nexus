@@ -1,6 +1,6 @@
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import IndonesiaShippingView from '@/views/IndonesiaShippingView.vue'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
@@ -16,8 +16,23 @@ function setup(factory: 'group' | 'huaxing' | 'huadeng' = 'huaxing') {
   return { app, auth, wrapper: mount(IndonesiaShippingView, { attachTo: document.body, global: { plugins: [pinia] } }) }
 }
 beforeEach(() => { vi.clearAllMocks(); mocks.get.mockResolvedValue({ data: { ready: true } }) })
+afterEach(() => { vi.unstubAllGlobals() })
 
 describe('印尼走货独立业务入口', () => {
+  it('opens the workspace and switches factories on HTTP without crypto.randomUUID', async () => {
+    vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) })
+    const { wrapper, app } = setup()
+    try {
+      for (const factory of ['huaxing', 'huadeng'] as const) {
+        app.activeFactoryId = factory
+        await flushPromises()
+        expect(mocks.get).toHaveBeenLastCalledWith(`/indonesia-shipping/${factory}/status`, { timeout: 20000 })
+        expect(wrapper.get('iframe').attributes('src')).toBe(`/api/indonesia-shipping/${factory}/app/shipments`)
+      }
+    } finally {
+      wrapper.unmount()
+    }
+  })
   it('accepts toolbar counts only from the current frame, factory and connection', async () => {
     const { wrapper, app } = setup(); await flushPromises()
     const frame = wrapper.get('iframe').element as HTMLIFrameElement

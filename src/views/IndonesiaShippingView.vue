@@ -6,6 +6,7 @@ import Button from '@/components/ui/button/Button.vue'
 import SectionPanel from '@/components/common/SectionPanel.vue'
 import { factoryContexts, type FactoryContextId } from '@/data/enterpriseMock'
 import { http } from '@/lib/http'
+import { createRandomUuid } from '@/lib/randomUuid'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { registerShippingNavigationGuard } from '@/features/indonesia-shipping/navigationGuard'
@@ -70,7 +71,7 @@ const contextKey = computed(() => `${factory.value}:${auth.currentUser?.id ?? ''
 async function connect() {
   const current = ++generation
   ready.value = false
-  toolbarId = crypto.randomUUID()
+  toolbarId = ''
   toolbarReady.value = false
   alertsEnabled.value = false
   alertCount.value = 0
@@ -81,6 +82,7 @@ async function connect() {
   if (factory.value === 'group' || !auth.isAuthenticated) return
   loading.value = true
   try {
+    toolbarId = createRandomUuid()
     await http.get(`/indonesia-shipping/${encodeURIComponent(factory.value)}/status`, { timeout: 20000 })
     if (current === generation) { ready.value = true; revision.value++ }
   } catch (cause: any) {
